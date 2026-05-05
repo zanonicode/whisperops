@@ -1,0 +1,5 @@
+project_id       = "YOUR_GCP_PROJECT_ID"
+region           = "us-central1"
+zone             = "us-central1-a"
+vm_machine_type  = "e2-standard-8"
+allowed_ssh_cidr = "0.0.0.0/0"
