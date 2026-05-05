@@ -1,0 +1,52 @@
+# Secrets & keys
+secrets/*.dec.yaml
+age.key
+*.age
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / TypeScript
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+*.tar
+
+# Env files
+.env
+.env.*
+!.env.example
