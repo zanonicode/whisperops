@@ -95,12 +95,12 @@ spec:
         repoUrl: cnoe.localtest.me:8443/gitea?repo=agent-${{ parameters.agent_name }}
         defaultBranch: main
 
-    - id: register-catalog
-      name: Register in Backstage catalog
-      action: catalog:register
-      input:
-        repoContentsUrl: ${{ steps['publish-gitea'].output.repoContentsUrl }}
-        catalogInfoPath: catalog-info.yaml
+    # catalog:register intentionally omitted — Backstage's catalog ingester
+    # auto-discovers the catalog-info.yaml from the Gitea repo via the
+    # location registered on the first scaffolder run for this agent name.
+    # Re-running the scaffolder for the same name would 409 on duplicate
+    # location, so we skip the explicit registration and let the poller
+    # handle ingestion.
 
   output:
     links:
