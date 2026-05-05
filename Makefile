@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help deploy destroy smoke-test upload-datasets regenerate-profiles decrypt-secrets lint \
+.PHONY: help preflight deploy destroy smoke-test upload-datasets regenerate-profiles decrypt-secrets lint \
         tf-init tf-plan tf-apply platform-bootstrap
 
 TERRAFORM_DIR := terraform/envs/demo
@@ -10,9 +10,55 @@ help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-25s\033[0m %s\n", $$1, $$2}'
 
+# ── Pre-flight ─────────────────────────────────────────────────────────────────
+
+preflight: ## Verify the operator's local + GCP environment is ready to deploy
+	@echo "→ Pre-flight checks"
+	@# 1. gcloud authenticated
+	@gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | grep -q . \
+		|| (echo "  ✗ gcloud not authenticated; run: gcloud auth application-default login" && exit 1)
+	@echo "  ✓ gcloud authenticated"
+	@# 2. tfvars has been customised
+	@! grep -q "YOUR_GCP_PROJECT_ID" $(TERRAFORM_DIR)/terraform.tfvars 2>/dev/null \
+		|| (echo "  ✗ terraform/envs/demo/terraform.tfvars still has placeholder project_id" && exit 1)
+	@echo "  ✓ terraform.tfvars customised"
+	@! grep -q "YOUR_GCP_PROJECT_ID" $(TERRAFORM_DIR)/backend.tfvars 2>/dev/null \
+		|| (echo "  ✗ terraform/envs/demo/backend.tfvars still has placeholder bucket name" && exit 1)
+	@echo "  ✓ backend.tfvars customised"
+	@# 3. Active project APIs
+	@PROJECT=$$(grep -E '^project_id' $(TERRAFORM_DIR)/terraform.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
+	for api in compute.googleapis.com storage.googleapis.com iam.googleapis.com iamcredentials.googleapis.com; do \
+		gcloud services list --enabled --project="$$PROJECT" --filter="config.name=$$api" --format="value(name)" 2>/dev/null | grep -q . \
+			|| (echo "  ✗ API not enabled on $$PROJECT: $$api" && exit 1); \
+	done; \
+	echo "  ✓ Required APIs enabled on project $$PROJECT"
+	@# 4. tfstate bucket exists
+	@BUCKET=$$(grep -E '^bucket' $(TERRAFORM_DIR)/backend.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
+	gcloud storage buckets describe "gs://$$BUCKET" --format=none 2>/dev/null \
+		|| (echo "  ✗ tfstate bucket gs://$$BUCKET not found — pre-create it manually" && exit 1); \
+	echo "  ✓ tfstate bucket gs://$$BUCKET exists"
+	@# 5. localtest.me resolves to 127.0.0.1
+	@RESOLVED=$$(dig +short cnoe.localtest.me 2>/dev/null | head -1); \
+	if [ "$$RESOLVED" != "127.0.0.1" ]; then \
+		echo "  ✗ cnoe.localtest.me resolved to '$$RESOLVED' (expected 127.0.0.1) — see README DNS prerequisite section"; \
+		exit 1; \
+	fi; \
+	echo "  ✓ cnoe.localtest.me → 127.0.0.1"
+	@# 6. SOPS_AGE_KEY_FILE
+	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
+		|| (echo "  ✗ SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
+	@echo "  ✓ SOPS_AGE_KEY_FILE points at a readable key"
+	@# 7. Secrets present and encrypted
+	@for f in anthropic openai supabase langfuse crossplane-gcp-creds; do \
+		[ -f $(SECRETS_DIR)/$$f.enc.yaml ] && grep -q '^sops:' $(SECRETS_DIR)/$$f.enc.yaml \
+			|| (echo "  ✗ secrets/$$f.enc.yaml missing or unencrypted" && exit 1); \
+	done
+	@echo "  ✓ All required SOPS secrets present and encrypted"
+	@echo "✓ Pre-flight passed"
+
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: tf-apply platform-bootstrap ## Full deploy: Terraform → platform bootstrap → ArgoCD sync
+deploy: preflight tf-apply platform-bootstrap ## Full deploy: pre-flight → Terraform → platform bootstrap → ArgoCD sync
 	@echo "✓ Deploy complete. Run 'make smoke-test' to verify."
 
 tf-init: ## Initialise Terraform backend
