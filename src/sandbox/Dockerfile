@@ -10,10 +10,10 @@ RUN pip install --no-cache-dir \
     uvicorn[standard]==0.32.1 \
     pydantic==2.10.3 \
     google-cloud-storage==2.18.2 \
-    opentelemetry-api==1.28.4 \
-    opentelemetry-sdk==1.28.4 \
-    opentelemetry-instrumentation-fastapi==0.49b4 \
-    opentelemetry-exporter-otlp-proto-grpc==1.28.4
+    opentelemetry-api==1.28.2 \
+    opentelemetry-sdk==1.28.2 \
+    opentelemetry-instrumentation-fastapi==0.49b2 \
+    opentelemetry-exporter-otlp-proto-grpc==1.28.2
 
 RUN pip install --no-cache-dir \
     pandas==2.2.3 \
