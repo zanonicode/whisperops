@@ -133,22 +133,12 @@ resource "google_project_iam_member" "bootstrap_sa_key_admin" {
 }
 
 ###############################################################################
-# Storage: tfstate + datasets buckets (terraform-google-modules/cloud-storage)
+# Storage: datasets bucket (terraform-google-modules/cloud-storage)
+#
+# The tfstate bucket is pre-created manually by the operator before the first
+# `terraform init` (it has to exist before Terraform can use it as a backend),
+# so it is intentionally NOT managed here.
 ###############################################################################
-
-module "tfstate_bucket" {
-  source  = "terraform-google-modules/cloud-storage/google//modules/simple_bucket"
-  version = "12.3.0"
-
-  project_id               = var.project_id
-  name                     = "${var.project_id}-tfstate"
-  location                 = var.region
-  force_destroy            = false
-  versioning               = true
-  bucket_policy_only       = true
-  public_access_prevention = "enforced"
-  labels                   = local.common_labels
-}
 
 module "datasets_bucket" {
   source  = "terraform-google-modules/cloud-storage/google//modules/simple_bucket"
