@@ -1,14 +1,14 @@
 apiVersion: cloudplatform.gcp.upbound.io/v1beta1
 kind: ProjectIAMMember
 metadata:
-  name: agent-{{ values.agent_name }}-{{ values.suffix }}-datasets-viewer
-  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  name: agent-{{ values.agent_name }}-datasets-viewer
+  namespace: agent-{{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   forProvider:
     role: roles/storage.objectViewer
-    member: serviceAccount:agent-{{ values.agent_name }}-{{ values.suffix }}@{{ values.project_id }}.iam.gserviceaccount.com
+    member: serviceAccount:agent-{{ values.agent_name }}@{{ values.project_id }}.iam.gserviceaccount.com
     condition:
       - title: shared-datasets-bucket-only
         expression: |
@@ -19,17 +19,17 @@ spec:
 apiVersion: cloudplatform.gcp.upbound.io/v1beta1
 kind: ProjectIAMMember
 metadata:
-  name: agent-{{ values.agent_name }}-{{ values.suffix }}-bucket-admin
-  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  name: agent-{{ values.agent_name }}-bucket-admin
+  namespace: agent-{{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   forProvider:
     role: roles/storage.objectAdmin
-    member: serviceAccount:agent-{{ values.agent_name }}-{{ values.suffix }}@{{ values.project_id }}.iam.gserviceaccount.com
+    member: serviceAccount:agent-{{ values.agent_name }}@{{ values.project_id }}.iam.gserviceaccount.com
     condition:
       - title: per-agent-bucket-only
         expression: |
-          resource.name.startsWith("projects/_/buckets/agent-{{ values.agent_name }}-{{ values.suffix }}")
+          resource.name.startsWith("projects/_/buckets/agent-{{ values.agent_name }}")
   providerConfigRef:
     name: default

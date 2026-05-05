@@ -2,7 +2,7 @@ apiVersion: kagent.dev/v1
 kind: ToolServer
 metadata:
   name: sandbox
-  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  namespace: agent-{{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:

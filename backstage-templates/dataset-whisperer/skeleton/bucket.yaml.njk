@@ -1,8 +1,8 @@
 apiVersion: storage.gcp.upbound.io/v1beta1
 kind: Bucket
 metadata:
-  name: agent-{{ values.agent_name }}-{{ values.suffix }}
-  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  name: agent-{{ values.agent_name }}
+  namespace: agent-{{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
@@ -12,7 +12,7 @@ spec:
     versioning:
       - enabled: true
     labels:
-      whisperops-agent: agent-{{ values.agent_name }}-{{ values.suffix }}
+      whisperops-agent: agent-{{ values.agent_name }}
       dataset: {{ values.dataset_id }}
   providerConfigRef:
     name: default

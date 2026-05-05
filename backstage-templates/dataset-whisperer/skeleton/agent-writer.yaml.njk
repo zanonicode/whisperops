@@ -2,7 +2,7 @@ apiVersion: kagent.dev/v1
 kind: Agent
 metadata:
   name: writer
-  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  namespace: agent-{{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
     whisperops.io/budget-usd: "{{ values.budget_usd | default('5.00') }}"
@@ -17,6 +17,6 @@ spec:
   observability:
     otlpEndpoint: http://otel-collector.observability:4317
     tags:
-      - agent-{{ values.agent_name }}-{{ values.suffix }}
+      - agent-{{ values.agent_name }}
       - dataset:{{ values.dataset_id }}
       - role:writer

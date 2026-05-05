@@ -1,0 +1,16 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: agent-{{ values.agent_name }}
+  description: "{{ values.description }}"
+  annotations:
+    backstage.io/kubernetes-namespace: agent-{{ values.agent_name }}
+  tags:
+    - whisperops
+    - dataset-whisperer
+    - dataset-{{ values.dataset_id }}
+spec:
+  type: ai-agent
+  lifecycle: experimental
+  owner: platform-team
+  system: dataset-whisperer

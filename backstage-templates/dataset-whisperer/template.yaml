@@ -71,12 +71,6 @@ spec:
           pattern: '^\d+\.\d{2}$'
 
   steps:
-    - id: generate-suffix
-      name: Generate unique suffix
-      action: whisperops:generate-suffix
-      input:
-        length: 4
-
     - id: fetch-template
       name: Render agent manifests
       action: fetch:template
@@ -88,7 +82,6 @@ spec:
           dataset_id: ${{ parameters.dataset_id }}
           primary_model: ${{ parameters.primary_model }}
           budget_usd: ${{ parameters.budget_usd }}
-          suffix: ${{ steps['generate-suffix'].output.suffix }}
           project_id: ${{ parameters.project_id | default('') }}
           region: US-CENTRAL1
           base_domain: sslip.io
@@ -97,11 +90,9 @@ spec:
       name: Commit manifests to Gitea
       action: publish:gitea
       input:
-        repoUrl: gitea.local?owner=whisperops&repo=agents
+        description: "Whisperops agent: ${{ parameters.description }}"
+        repoUrl: cnoe.localtest.me:8443/gitea?repo=agent-${{ parameters.agent_name }}
         defaultBranch: main
-        commitMessage: "feat(agent): provision ${{ parameters.agent_name }}-${{ steps['generate-suffix'].output.suffix }}"
-        sourcePath: .
-        targetPath: ${{ parameters.agent_name }}-${{ steps['generate-suffix'].output.suffix }}
 
     - id: register-catalog
       name: Register in Backstage catalog
@@ -115,4 +106,4 @@ spec:
       - title: Agent Repository
         url: ${{ steps['publish-gitea'].output.remoteUrl }}
       - title: Chat UI
-        url: https://${{ parameters.agent_name }}-${{ steps['generate-suffix'].output.suffix }}.sslip.io
+        url: https://${{ parameters.agent_name }}.sslip.io

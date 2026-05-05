@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: agent-{{ values.agent_name }}-{{ values.suffix }}
+  name: agent-{{ values.agent_name }}
   labels:
     whisperops.io/managed-by: backstage
     whisperops.io/dataset: {{ values.dataset_id }}
