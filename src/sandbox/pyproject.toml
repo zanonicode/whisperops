@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sandbox"
+version = "0.1.0"
+description = "Sandboxed Python code execution service for Dataset Whisperer"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "pydantic==2.10.3",
+    "google-cloud-storage==2.18.2",
+    "opentelemetry-api==1.28.4",
+    "opentelemetry-sdk==1.28.4",
+    "opentelemetry-instrumentation-fastapi==0.49b4",
+    "opentelemetry-exporter-otlp-proto-grpc==1.28.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.24.0",
+    "httpx==0.28.1",
+    "ruff==0.8.6",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
