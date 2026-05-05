@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install ruff
-        run: pip install ruff==0.8.6
+        run: pip install ruff==0.15.12
 
       - name: Lint sandbox
         run: ruff check src/sandbox/
@@ -62,33 +62,35 @@ jobs:
         with:
           version: "3.16.4"
 
-      - name: Add Helm repos
+      - name: Lint all platform charts
         run: |
-          helm repo add kyverno https://kyverno.github.io/kyverno
-          helm repo add grafana https://grafana.github.io/helm-charts
-          helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
-          helm repo update
+          for chart in platform/helm/*/; do
+            echo "→ Linting $chart"
+            helm lint "$chart"
+          done
 
-      - name: Lint sandbox chart
-        run: helm lint platform/helm/sandbox/
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Lint chat-frontend chart
-        run: helm lint platform/helm/chat-frontend/
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
 
-      - name: Lint kyverno-policies chart
-        run: helm lint platform/helm/kyverno-policies/
+      - name: Init (no backend)
+        working-directory: terraform
+        run: terraform init -backend=false
 
-      - name: Lint observability-extras chart
-        run: helm lint platform/helm/observability-extras/
+      - name: Validate
+        working-directory: terraform
+        run: terraform validate
 
-      - name: Lint agent-prompts chart
-        run: helm lint platform/helm/agent-prompts/
-
-      - name: Lint budget-controller chart
-        run: helm lint platform/helm/budget-controller/
-
-      - name: Lint platform-bootstrap-job chart
-        run: helm lint platform/helm/platform-bootstrap-job/
+      - name: Format check
+        working-directory: terraform
+        run: terraform fmt -check -recursive
 
   check-sops-files:
     name: SOPS Encrypted Files Present
