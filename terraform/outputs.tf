@@ -1,16 +1,16 @@
 output "vm_external_ip" {
   description = "Static external IP address of the whisperops GCE VM."
-  value       = module.network.static_ip_address
+  value       = google_compute_address.static_ip.address
 }
 
 output "datasets_bucket_name" {
   description = "Name of the GCS bucket used for whisperops datasets."
-  value       = module.storage.datasets_bucket_name
+  value       = module.datasets_bucket.name
 }
 
 output "bootstrap_sa_email" {
   description = "Email of the whisperops bootstrap service account."
-  value       = module.iam.bootstrap_sa_email
+  value       = module.bootstrap_sa.email
 }
 
 output "kubeconfig_path" {
