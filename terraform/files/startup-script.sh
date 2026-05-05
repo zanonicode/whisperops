@@ -37,9 +37,11 @@ install -m 0755 "${TMPDIR}/idpbuilder" /usr/local/bin/idpbuilder
 rm -rf "${TMPDIR}"
 log "idpbuilder installed at $(which idpbuilder)"
 
-# 4. Bootstrap the in-cluster IDP
-log "Running idpbuilder create"
-idpbuilder create --use-path-routing
+# 4. Bootstrap the in-cluster IDP (with Backstage package)
+log "Running idpbuilder create with Backstage stack"
+idpbuilder create \
+  --use-path-routing \
+  -p https://github.com/cnoe-io/stacks//backstage
 log "idpbuilder create completed"
 
 # 5. Distribute kubeconfig to ubuntu user
