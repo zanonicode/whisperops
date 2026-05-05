@@ -1,0 +1,70 @@
+groups:
+  - name: whisperops.slo.query-latency
+    interval: 30s
+    rules:
+      - record: job:whisperops_query_duration_seconds_bucket:rate1m
+        expr: rate(whisperops_query_duration_seconds_bucket[1m])
+
+      - record: job:whisperops_query_duration_seconds_bucket:rate5m
+        expr: rate(whisperops_query_duration_seconds_bucket[5m])
+
+      - record: job:whisperops_query_success_rate:rate1h
+        expr: |
+          sum(rate(whisperops_query_duration_seconds_bucket{le="15"}[1h]))
+          / sum(rate(whisperops_query_duration_seconds_count[1h]))
+
+      - record: job:whisperops_query_success_rate:rate6h
+        expr: |
+          sum(rate(whisperops_query_duration_seconds_bucket{le="15"}[6h]))
+          / sum(rate(whisperops_query_duration_seconds_count[6h]))
+
+      - alert: WhisperopsQueryLatencySLOBurnFast
+        expr: |
+          (1 - job:whisperops_query_success_rate:rate1h) > (14.4 * (1 - 0.99))
+          and (1 - job:whisperops_query_success_rate:rate5m) > (14.4 * (1 - 0.99))
+        for: 2m
+        labels:
+          severity: critical
+          slo: query-latency-p99-15s
+          window: 1h
+        annotations:
+          summary: "Query latency SLO burning fast (page)"
+          description: >
+            Error budget is consuming at 14.4x the sustainable rate over 1h window.
+            SLO target: 99% of queries complete within 15s.
+
+      - alert: WhisperopsQueryLatencySLOBurnSlow
+        expr: |
+          (1 - job:whisperops_query_success_rate:rate6h) > (6 * (1 - 0.99))
+        for: 15m
+        labels:
+          severity: warning
+          slo: query-latency-p99-15s
+          window: 6h
+        annotations:
+          summary: "Query latency SLO burning slowly (ticket)"
+          description: >
+            Error budget is consuming at 6x the sustainable rate over 6h window.
+            SLO target: 99% of queries complete within 15s.
+
+  - name: whisperops.sandbox
+    rules:
+      - alert: SandboxHighTimeoutRate
+        expr: |
+          rate(sandbox_timeouts_total[5m]) / rate(sandbox_executions_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sandbox timeout rate >10%"
+          description: "More than 10% of sandbox executions are timing out over 5 minutes."
+
+      - alert: SandboxOOMsDetected
+        expr: |
+          rate(sandbox_oom_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sandbox OOM errors detected"
+          description: "Memory limit exceeded events detected in sandbox. Consider raising the 3GB cap."

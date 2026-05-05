@@ -1,0 +1,44 @@
+groups:
+  - name: whisperops.budget
+    interval: 60s
+    rules:
+      - record: job:whisperops_agent_budget_ratio:latest
+        expr: whisperops_agent_spend_usd / whisperops_agent_budget_usd
+
+      - alert: AgentBudget80Percent
+        expr: |
+          job:whisperops_agent_budget_ratio:latest >= 0.8
+          and job:whisperops_agent_budget_ratio:latest < 1.0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent approaching budget limit"
+          description: >
+            Agent in namespace {{ $labels.agent_namespace }} has consumed
+            {{ $value | humanizePercentage }} of its configured budget.
+            The budget-controller will shut it down at 100%.
+
+      - alert: AgentBudget100Percent
+        expr: |
+          job:whisperops_agent_budget_ratio:latest >= 1.0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Agent budget exhausted — scaled to 0"
+          description: >
+            Agent in namespace {{ $labels.agent_namespace }} has exhausted its budget.
+            All Deployments in the namespace have been scaled to 0 replicas by
+            the budget-controller. Re-enable by updating the budget annotation
+            and triggering an ArgoCD re-sync.
+
+      - alert: AgentBudgetControllerDown
+        expr: |
+          absent(up{job="budget-controller"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Budget controller is not running"
+          description: >
+            The whisperops budget-controller has been unreachable for 5 minutes.
+            Agent budget enforcement is not active.
