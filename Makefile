@@ -35,12 +35,10 @@ platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profil
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
 
-upload-datasets: ## Upload local CSVs to the shared GCS datasets bucket
+upload-datasets: ## Upload all CSVs from datasets/ to the shared GCS datasets bucket
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID is not set"; exit 1)
 	@BUCKET="$(PROJECT_ID)-datasets"; \
-	gcloud storage cp $(DATASETS_DIR)/california-housing-prices.csv gs://$$BUCKET/california-housing/housing.csv && \
-	gcloud storage cp $(DATASETS_DIR)/online_retail_II.csv          gs://$$BUCKET/online-retail-ii/online_retail_II.csv && \
-	gcloud storage cp $(DATASETS_DIR)/spotify-tracks.csv            gs://$$BUCKET/spotify-tracks/dataset.csv && \
+	gcloud storage cp $(DATASETS_DIR)/*.csv gs://$$BUCKET/ && \
 	echo "✓ Datasets uploaded to gs://$$BUCKET"
 
 regenerate-profiles: ## Re-run platform-bootstrap to refresh dataset profiles in Supabase
