@@ -190,6 +190,15 @@ module "vm_instance_template" {
 
   # Module would otherwise create a new SA; we use bootstrap_sa instead.
   create_service_account = false
+
+  # Public IP is configured here (on the template) — the compute_instance
+  # submodule silently ignores access_config when the template defines the NIC.
+  access_config = [
+    {
+      nat_ip       = google_compute_address.static_ip.address
+      network_tier = "PREMIUM"
+    },
+  ]
 }
 
 module "vm" {
@@ -206,11 +215,4 @@ module "vm" {
   deletion_protection = false
 
   static_ips = [google_compute_address.static_ip.address]
-
-  access_config = [
-    {
-      nat_ip       = google_compute_address.static_ip.address
-      network_tier = "PREMIUM"
-    },
-  ]
 }
