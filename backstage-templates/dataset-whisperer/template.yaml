@@ -76,6 +76,7 @@ spec:
       action: fetch:template
       input:
         url: ./skeleton
+        templateFileExtension: .njk
         values:
           agent_name: ${{ parameters.agent_name }}
           description: ${{ parameters.description }}
