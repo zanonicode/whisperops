@@ -1,0 +1,65 @@
+repositories:
+  - name: kagent
+    url: https://charts.kagent.dev
+  - name: grafana
+    url: https://grafana.github.io/helm-charts
+  - name: open-telemetry
+    url: https://open-telemetry.github.io/opentelemetry-helm-charts
+  - name: kyverno
+    url: https://kyverno.github.io/kyverno
+  - name: crossplane-stable
+    url: https://charts.crossplane.io/stable
+  - name: argo
+    url: https://argoproj.github.io/argo-helm
+
+releases:
+  - name: crossplane
+    namespace: crossplane-system
+    createNamespace: true
+    chart: crossplane-stable/crossplane
+    version: "1.17.1"
+
+  - name: kyverno
+    namespace: kyverno
+    createNamespace: true
+    chart: kyverno/kyverno
+    version: "3.2.6"
+
+  - name: lgtm-distributed
+    namespace: observability
+    createNamespace: true
+    chart: grafana/lgtm-distributed
+    version: "2.1.0"
+    values:
+      - grafana:
+          enabled: true
+        loki:
+          enabled: true
+        tempo:
+          enabled: true
+        mimir:
+          enabled: true
+
+  - name: opentelemetry-collector
+    namespace: observability
+    createNamespace: true
+    chart: open-telemetry/opentelemetry-collector
+    version: "0.104.0"
+    needs:
+      - observability/lgtm-distributed
+
+  - name: kagent
+    namespace: kagent-system
+    createNamespace: true
+    chart: kagent/kagent
+    version: "0.4.3"
+
+  - name: argocd-root-app
+    namespace: argocd
+    createNamespace: false
+    chart: argo/argo-cd
+    version: "7.6.5"
+    needs:
+      - crossplane-system/crossplane
+      - kyverno/kyverno
+      - kagent-system/kagent
