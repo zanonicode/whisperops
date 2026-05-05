@@ -35,15 +35,12 @@ platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profil
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
 
-upload-datasets: ## Unzip and upload CSVs to the shared GCS datasets bucket
+upload-datasets: ## Upload local CSVs to the shared GCS datasets bucket
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID is not set"; exit 1)
 	@BUCKET="$(PROJECT_ID)-datasets"; \
-	unzip -o $(DATASETS_DIR)/california-housing-prices.zip -d /tmp/dw-datasets/california-housing/ && \
-	unzip -o $(DATASETS_DIR)/online-retail-ii-uci.zip -d /tmp/dw-datasets/online-retail-ii/ && \
-	unzip -o $(DATASETS_DIR)/spotify-tracks.zip -d /tmp/dw-datasets/spotify-tracks/ && \
-	gcloud storage cp /tmp/dw-datasets/california-housing/housing.csv gs://$$BUCKET/california-housing/housing.csv && \
-	gcloud storage cp /tmp/dw-datasets/online-retail-ii/online_retail_II.csv gs://$$BUCKET/online-retail-ii/online_retail_II.csv && \
-	gcloud storage cp /tmp/dw-datasets/spotify-tracks/dataset.csv gs://$$BUCKET/spotify-tracks/dataset.csv && \
+	gcloud storage cp $(DATASETS_DIR)/california-housing-prices.csv gs://$$BUCKET/california-housing/housing.csv && \
+	gcloud storage cp $(DATASETS_DIR)/online_retail_II.csv          gs://$$BUCKET/online-retail-ii/online_retail_II.csv && \
+	gcloud storage cp $(DATASETS_DIR)/spotify-tracks.csv            gs://$$BUCKET/spotify-tracks/dataset.csv && \
 	echo "✓ Datasets uploaded to gs://$$BUCKET"
 
 regenerate-profiles: ## Re-run platform-bootstrap to refresh dataset profiles in Supabase
