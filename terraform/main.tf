@@ -218,11 +218,9 @@ module "vm" {
   static_ips = [google_compute_address.static_ip.address]
 
   access_config = [
-    [
-      {
-        nat_ip       = google_compute_address.static_ip.address
-        network_tier = "PREMIUM"
-      },
-    ],
+    {
+      nat_ip       = google_compute_address.static_ip.address
+      network_tier = "PREMIUM"
+    },
   ]
 }
