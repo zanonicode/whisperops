@@ -2,7 +2,7 @@
 set -euo pipefail
 
 LOGFILE="/var/log/whisperops-bootstrap.log"
-IDPBUILDER_VERSION="v0.9.0"
+IDPBUILDER_VERSION="v0.10.2"
 IDPBUILDER_ARCH="linux-amd64"
 
 log() {
@@ -20,11 +20,14 @@ apt-get install -y docker.io git curl
 log "Enabling Docker"
 systemctl enable --now docker
 
-# 3. Download idpBuilder
+# 3. Download idpBuilder (released as a tarball since v0.10.x)
 log "Downloading idpBuilder ${IDPBUILDER_VERSION}"
-IDPBUILDER_URL="https://github.com/cnoe-io/idpbuilder/releases/download/${IDPBUILDER_VERSION}/idpbuilder-${IDPBUILDER_ARCH}"
-curl -fsSL "${IDPBUILDER_URL}" -o /usr/local/bin/idpbuilder
-chmod +x /usr/local/bin/idpbuilder
+IDPBUILDER_URL="https://github.com/cnoe-io/idpbuilder/releases/download/${IDPBUILDER_VERSION}/idpbuilder-${IDPBUILDER_ARCH}.tar.gz"
+TMPDIR="$(mktemp -d)"
+curl -fsSL "${IDPBUILDER_URL}" -o "${TMPDIR}/idpbuilder.tar.gz"
+tar -xzf "${TMPDIR}/idpbuilder.tar.gz" -C "${TMPDIR}"
+install -m 0755 "${TMPDIR}/idpbuilder" /usr/local/bin/idpbuilder
+rm -rf "${TMPDIR}"
 log "idpbuilder installed at $(which idpbuilder)"
 
 # 4. Bootstrap the in-cluster IDP
