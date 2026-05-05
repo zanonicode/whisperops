@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff==0.8.6
+
+      - name: Lint sandbox
+        run: ruff check src/sandbox/
+
+      - name: Lint platform-bootstrap
+        run: ruff check src/platform-bootstrap/
+
+      - name: Lint budget-controller
+        run: ruff check src/budget-controller/
+
+  lint-typescript:
+    name: Lint TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/chat-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: src/chat-frontend
+        run: npm ci
+
+      - name: Type check
+        working-directory: src/chat-frontend
+        run: npm run type-check
+
+  lint-helm:
+    name: Lint Helm Charts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.16.4"
+
+      - name: Add Helm repos
+        run: |
+          helm repo add kyverno https://kyverno.github.io/kyverno
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+          helm repo update
+
+      - name: Lint sandbox chart
+        run: helm lint platform/helm/sandbox/
+
+      - name: Lint chat-frontend chart
+        run: helm lint platform/helm/chat-frontend/
+
+      - name: Lint kyverno-policies chart
+        run: helm lint platform/helm/kyverno-policies/
+
+      - name: Lint observability-extras chart
+        run: helm lint platform/helm/observability-extras/
+
+      - name: Lint agent-prompts chart
+        run: helm lint platform/helm/agent-prompts/
+
+      - name: Lint budget-controller chart
+        run: helm lint platform/helm/budget-controller/
+
+      - name: Lint platform-bootstrap-job chart
+        run: helm lint platform/helm/platform-bootstrap-job/
+
+  check-sops-files:
+    name: SOPS Encrypted Files Present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required encrypted secrets exist
+        run: |
+          REQUIRED=(
+            secrets/anthropic.enc.yaml
+            secrets/openai.enc.yaml
+            secrets/supabase.enc.yaml
+            secrets/langfuse.enc.yaml
+            secrets/crossplane-gcp-creds.enc.yaml
+          )
+          FAIL=0
+          for f in "${REQUIRED[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "MISSING: $f"
+              FAIL=1
+            elif ! grep -q 'sops:' "$f"; then
+              echo "NOT ENCRYPTED: $f (missing 'sops:' key)"
+              FAIL=1
+            else
+              echo "OK: $f"
+            fi
+          done
+          exit $FAIL
+
+  run-evals:
+    name: Run Fixture Evals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run eval validation
+        run: python3 tests/eval/agent-template-validation/run-evals.py

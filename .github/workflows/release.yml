@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  build-sandbox:
+    name: Build Sandbox Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push sandbox
+        uses: docker/build-push-action@v6
+        with:
+          context: src/sandbox
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/sandbox:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/sandbox:latest
+
+  build-chat-frontend:
+    name: Build Chat Frontend Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push chat-frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: src/chat-frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/chat-frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/chat-frontend:latest
+
+  build-platform-bootstrap:
+    name: Build Platform Bootstrap Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push platform-bootstrap
+        uses: docker/build-push-action@v6
+        with:
+          context: src/platform-bootstrap
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/platform-bootstrap:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/platform-bootstrap:latest
+
+  build-budget-controller:
+    name: Build Budget Controller Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push budget-controller
+        uses: docker/build-push-action@v6
+        with:
+          context: src/budget-controller
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/budget-controller:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/budget-controller:latest
