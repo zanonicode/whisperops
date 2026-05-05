@@ -1,4 +1,4 @@
-project_id       = "YOUR_GCP_PROJECT_ID"
+project_id       = whisperops
 region           = "us-central1"
 zone             = "us-central1-a"
 vm_machine_type  = "e2-standard-8"
