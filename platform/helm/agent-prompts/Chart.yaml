@@ -1,0 +1,13 @@
+apiVersion: v2
+name: agent-prompts
+description: Shared system prompts for Dataset Whisperer agents (Planner, Analyst, Writer)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - prompts
+  - kagent
+  - llm
+  - whisperops
+maintainers:
+  - name: whisperops-platform

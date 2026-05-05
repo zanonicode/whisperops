@@ -1,0 +1,38 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    policies.kyverno.io/title: Restrict Image Registries
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Only images from the platform Gitea registry and approved upstream
+      registries are allowed. This prevents supply-chain attacks via
+      untrusted image sources.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: restrict-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: Regexp
+                    values:
+                      - "^agent-.*"
+      validate:
+        message: >-
+          Images must come from the platform Gitea registry (gitea.local/)
+          or approved upstream registries (ghcr.io, registry.k8s.io, quay.io,
+          gcr.io, docker.io/library).
+        pattern:
+          spec:
+            containers:
+              - image: "gitea.local/* | ghcr.io/* | registry.k8s.io/* | quay.io/* | gcr.io/* | docker.io/library/*"

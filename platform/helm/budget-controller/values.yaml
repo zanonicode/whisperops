@@ -1,0 +1,45 @@
+replicaCount: 1
+
+image:
+  repository: gitea.local/whisperops/budget-controller
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+pollInterval: 60
+
+langfuse:
+  secretName: langfuse-credentials
+  publicKeyEnvVar: LANGFUSE_PUBLIC_KEY
+  secretKeyEnvVar: LANGFUSE_SECRET_KEY
+  hostEnvVar: LANGFUSE_HOST
+  host: "https://cloud.langfuse.com"
+
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"
+
+serviceAccount:
+  create: true
+  name: budget-controller
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+podSecurityContext:
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

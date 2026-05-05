@@ -1,0 +1,13 @@
+apiVersion: v2
+name: budget-controller
+description: Budget enforcement controller for Dataset Whisperer agents
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - budget
+  - controller
+  - langfuse
+  - whisperops
+maintainers:
+  - name: whisperops-platform

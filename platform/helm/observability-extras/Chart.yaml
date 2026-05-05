@@ -1,0 +1,14 @@
+apiVersion: v2
+name: observability-extras
+description: OTel Collector config, Grafana dashboards, and Prometheus rules for the whisperops platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - observability
+  - otel
+  - grafana
+  - prometheus
+  - whisperops
+maintainers:
+  - name: whisperops-platform

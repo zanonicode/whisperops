@@ -1,0 +1,50 @@
+otelCollector:
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 200
+    exporters:
+      otlp/tempo:
+        endpoint: tempo.observability:4317
+        tls:
+          insecure: true
+      otlphttp/langfuse:
+        endpoint: "${LANGFUSE_OTLP_ENDPOINT}"
+        headers:
+          Authorization: "Basic ${LANGFUSE_BASIC_AUTH}"
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo, otlphttp/langfuse]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo]
+
+langfuse:
+  secretName: langfuse-credentials
+  otlpEndpointKey: LANGFUSE_OTLP_ENDPOINT
+  basicAuthKey: LANGFUSE_BASIC_AUTH
+
+grafana:
+  dashboardsConfigMap: whisperops-dashboards
+  datasources:
+    tempo:
+      url: http://tempo.observability:3100
+    loki:
+      url: http://loki-gateway.observability:80
+    mimir:
+      url: http://mimir-nginx.observability:80/prometheus
+    infinity:
+      langfuseUrl: "https://cloud.langfuse.com"

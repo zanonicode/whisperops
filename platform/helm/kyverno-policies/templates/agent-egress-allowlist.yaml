@@ -1,0 +1,68 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: agent-egress-allowlist
+  annotations:
+    policies.kyverno.io/title: Agent Egress Allowlist
+    policies.kyverno.io/category: Network Controls
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Generates a default NetworkPolicy for every agent-* namespace that
+      restricts egress to the sandbox service, Supabase, Anthropic API,
+      and DNS only. Namespaces without an explicit Kyverno Policy override
+      get this default.
+spec:
+  rules:
+    - name: generate-agent-egress-networkpolicy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: Regexp
+                    values:
+                      - "^agent-.*"
+      generate:
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: default-egress
+        namespace: "{{`{{request.object.metadata.name}}`}}"
+        data:
+          spec:
+            podSelector: {}
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: ingress-nginx
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: sandbox
+                ports:
+                  - protocol: TCP
+                    port: 8080
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      except:
+                        - 10.0.0.0/8
+                        - 172.16.0.0/12
+                        - 192.168.0.0/16
+                ports:
+                  - protocol: TCP
+                    port: 443
+              - ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53

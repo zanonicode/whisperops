@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: whisperops-dashboards
+  namespace: {{ .Release.Namespace }}
+  labels:
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    grafana_dashboard: "1"
+  annotations:
+    grafana_dashboard_folder: "whisperops"
+data:
+  platform-health.json: |-
+    {{ .Files.Get "files/dashboards/platform-health.json" | nindent 4 }}
+  agent-cost.json: |-
+    {{ .Files.Get "files/dashboards/agent-cost.json" | nindent 4 }}
+  agent-performance.json: |-
+    {{ .Files.Get "files/dashboards/agent-performance.json" | nindent 4 }}
+  sandbox-execution.json: |-
+    {{ .Files.Get "files/dashboards/sandbox-execution.json" | nindent 4 }}

@@ -1,0 +1,61 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: whisperops-rules
+  namespace: {{ .Release.Namespace }}
+  labels:
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: whisperops.slo.query-latency
+      interval: 30s
+      rules:
+        - record: job:whisperops_query_duration_seconds:rate5m
+          expr: rate(whisperops_query_duration_seconds_bucket[5m])
+        - alert: QueryLatencySLOBudgetBurn1h
+          expr: |
+            (
+              rate(whisperops_query_duration_seconds_bucket{le="15"}[1h])
+              / rate(whisperops_query_duration_seconds_count[1h])
+            ) < 0.99
+          for: 2m
+          labels:
+            severity: critical
+            window: 1h
+          annotations:
+            summary: "Query latency SLO budget burning fast (1h window)"
+            description: "p99 query latency SLO error budget burn rate is too high over 1h"
+        - alert: QueryLatencySLOBudgetBurn6h
+          expr: |
+            (
+              rate(whisperops_query_duration_seconds_bucket{le="15"}[6h])
+              / rate(whisperops_query_duration_seconds_count[6h])
+            ) < 0.99
+          for: 15m
+          labels:
+            severity: warning
+            window: 6h
+          annotations:
+            summary: "Query latency SLO budget burning (6h window)"
+            description: "p99 query latency SLO error budget burn rate elevated over 6h"
+    - name: whisperops.budget
+      rules:
+        - alert: AgentBudget80Percent
+          expr: |
+            whisperops_agent_spend_usd / whisperops_agent_budget_usd > 0.8
+          labels:
+            severity: warning
+          annotations:
+            summary: "Agent has consumed 80% of budget"
+            description: "Agent spend is at high percentage of configured budget"
+        - alert: AgentBudget100Percent
+          expr: |
+            whisperops_agent_spend_usd / whisperops_agent_budget_usd >= 1.0
+          labels:
+            severity: critical
+          annotations:
+            summary: "Agent budget exhausted"
+            description: "Agent has consumed its full budget; replicas will be scaled to 0"

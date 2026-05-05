@@ -1,0 +1,39 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-budget-annotation
+  annotations:
+    policies.kyverno.io/title: Require Budget Annotation on Agent CRDs
+    policies.kyverno.io/category: Governance
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Agent
+    policies.kyverno.io/description: >-
+      Every kagent Agent CRD deployed in an agent namespace must carry
+      the whisperops.io/budget-usd annotation. This is an audit-mode
+      policy — it warns but does not block, ensuring existing agents
+      are not disrupted during rollout.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-budget-annotation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Agent
+              group: kagent.dev
+              namespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: Regexp
+                    values:
+                      - "^agent-.*"
+      validate:
+        message: >-
+          Agent CRD must have a whisperops.io/budget-usd annotation
+          specifying the maximum spend in USD (e.g., "5.00").
+        pattern:
+          metadata:
+            annotations:
+              whisperops.io/budget-usd: "?*"

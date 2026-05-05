@@ -1,0 +1,12 @@
+apiVersion: v2
+name: sandbox
+description: Sandboxed Python code-execution service for Dataset Whisperer agents
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - sandbox
+  - code-execution
+  - whisperops
+maintainers:
+  - name: whisperops-platform

@@ -1,0 +1,44 @@
+image:
+  repository: gitea.local/whisperops/platform-bootstrap
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+datasetsBucket: ""
+
+secrets:
+  supabase:
+    secretName: supabase-credentials
+    urlKey: url
+    serviceRoleKeyKey: service-role-key
+  anthropic:
+    secretName: anthropic-credentials
+    apiKeyKey: api-key
+  openai:
+    secretName: openai-credentials
+    apiKeyKey: api-key
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2000m"
+    memory: "2Gi"
+
+serviceAccount:
+  create: true
+  name: platform-bootstrap
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+podSecurityContext:
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault

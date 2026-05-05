@@ -1,0 +1,13 @@
+apiVersion: v2
+name: chat-frontend
+description: Dataset Whisperer chat frontend — deployed per agent by Backstage template
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - chat
+  - frontend
+  - whisperops
+  - sse
+maintainers:
+  - name: whisperops-platform

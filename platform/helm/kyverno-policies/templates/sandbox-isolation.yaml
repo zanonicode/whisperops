@@ -1,0 +1,62 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: sandbox-isolation
+  annotations:
+    policies.kyverno.io/title: Sandbox Strict Network Isolation
+    policies.kyverno.io/category: Network Controls
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Generates a strict NetworkPolicy in the sandbox namespace limiting
+      egress to GCS HTTPS endpoints and DNS only. The sandbox must not
+      reach any internal cluster services except DNS.
+spec:
+  rules:
+    - name: generate-sandbox-networkpolicy
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              selector:
+                matchLabels:
+                  kubernetes.io/metadata.name: sandbox
+      generate:
+        synchronize: true
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        name: sandbox-strict-egress
+        namespace: sandbox
+        data:
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: sandbox
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: kagent-system
+                ports:
+                  - protocol: TCP
+                    port: 8080
+            egress:
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      except:
+                        - 10.0.0.0/8
+                        - 172.16.0.0/12
+                        - 192.168.0.0/16
+                ports:
+                  - protocol: TCP
+                    port: 443
+              - ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53

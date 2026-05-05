@@ -1,0 +1,13 @@
+apiVersion: v2
+name: platform-bootstrap-job
+description: One-shot bootstrap Job — generates dataset profiles and loads them into Supabase pgvector
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - bootstrap
+  - job
+  - platform
+  - whisperops
+maintainers:
+  - name: whisperops-platform

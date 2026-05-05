@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prompt-analyst
+  namespace: {{ .Values.namespace }}
+  labels:
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    app.kubernetes.io/name: agent-prompts
+    app.kubernetes.io/component: analyst
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  system-prompt: |
+{{ .Files.Get "files/prompt-analyst.txt" | indent 4 }}
