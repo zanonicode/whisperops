@@ -3,6 +3,13 @@ secrets/*.dec.yaml
 age.key
 *.age
 
+# Datasets — bucket is source of truth post-upload (110 MB local copy)
+datasets/*.csv
+datasets/*.zip
+
+# Claude Code per-user config
+.claude/settings.local.json
+
 # Terraform
 .terraform/
 .terraform.lock.hcl
