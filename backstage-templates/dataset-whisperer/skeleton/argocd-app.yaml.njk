@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agent-{{ values.agent_name }}-{{ values.suffix }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    whisperops.io/agent: agent-{{ values.agent_name }}-{{ values.suffix }}
+    whisperops.io/dataset: {{ values.dataset_id }}
+spec:
+  project: default
+  source:
+    repoURL: http://gitea.gitea.svc.cluster.local/whisperops/agents.git
+    targetRevision: HEAD
+    path: {{ values.agent_name }}-{{ values.suffix }}
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

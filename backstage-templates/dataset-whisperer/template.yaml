@@ -1,0 +1,118 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: dataset-whisperer
+  title: Dataset Whisperer Agent
+  description: >
+    Provision a fully governed Dataset Whisperer agent — Planner + Analyst + Writer —
+    with a dedicated GCS bucket, IAM bindings, sandbox access, and chat UI.
+  tags:
+    - whisperops
+    - ai-agent
+    - data-analysis
+spec:
+  owner: platform-team
+  type: service
+
+  parameters:
+    - title: Agent Identity
+      required:
+        - agent_name
+        - description
+      properties:
+        agent_name:
+          title: Agent Name
+          type: string
+          description: >
+            Short slug identifier for this agent (e.g., "housing-analyst").
+            Used in namespace, bucket, and ingress hostname.
+          pattern: '^[a-z][a-z0-9-]{2,28}[a-z0-9]$'
+          ui:autofocus: true
+        description:
+          title: Description
+          type: string
+          description: What does this agent analyse? Used in Backstage catalog.
+          maxLength: 200
+
+    - title: Dataset & Model Configuration
+      required:
+        - dataset_id
+        - primary_model
+      properties:
+        dataset_id:
+          title: Dataset
+          type: string
+          description: The dataset this agent will analyse.
+          enum:
+            - california-housing
+            - online-retail-ii
+            - spotify-tracks
+          enumNames:
+            - California Housing Prices (1.4 MB)
+            - Online Retail II UCI (95 MB)
+            - Spotify Tracks (20 MB)
+        primary_model:
+          title: Primary Model (Analyst + Writer)
+          type: string
+          description: >
+            Model for the Analyst and Writer roles. Planner is always claude-haiku-4-5-20251001.
+          enum:
+            - claude-haiku-4-5-20251001
+            - claude-sonnet-4-5-20251001
+          enumNames:
+            - Claude Haiku (fast, economical)
+            - Claude Sonnet (higher quality, 10x cost)
+          default: claude-haiku-4-5-20251001
+        budget_usd:
+          title: Budget (USD)
+          type: string
+          description: Maximum spend in USD before agent is shut down by budget-controller.
+          default: "5.00"
+          pattern: '^\d+\.\d{2}$'
+
+  steps:
+    - id: generate-suffix
+      name: Generate unique suffix
+      action: whisperops:generate-suffix
+      input:
+        length: 4
+
+    - id: fetch-template
+      name: Render agent manifests
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          agent_name: ${{ parameters.agent_name }}
+          description: ${{ parameters.description }}
+          dataset_id: ${{ parameters.dataset_id }}
+          primary_model: ${{ parameters.primary_model }}
+          budget_usd: ${{ parameters.budget_usd }}
+          suffix: ${{ steps['generate-suffix'].output.suffix }}
+          project_id: ${{ parameters.project_id | default('') }}
+          region: US-CENTRAL1
+          base_domain: sslip.io
+
+    - id: publish-gitea
+      name: Commit manifests to Gitea
+      action: publish:gitea
+      input:
+        repoUrl: gitea.local?owner=whisperops&repo=agents
+        defaultBranch: main
+        commitMessage: "feat(agent): provision ${{ parameters.agent_name }}-${{ steps['generate-suffix'].output.suffix }}"
+        sourcePath: .
+        targetPath: ${{ parameters.agent_name }}-${{ steps['generate-suffix'].output.suffix }}
+
+    - id: register-catalog
+      name: Register in Backstage catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps['publish-gitea'].output.repoContentsUrl }}
+        catalogInfoPath: catalog-info.yaml
+
+  output:
+    links:
+      - title: Agent Repository
+        url: ${{ steps['publish-gitea'].output.remoteUrl }}
+      - title: Chat UI
+        url: https://${{ parameters.agent_name }}-${{ steps['generate-suffix'].output.suffix }}.sslip.io

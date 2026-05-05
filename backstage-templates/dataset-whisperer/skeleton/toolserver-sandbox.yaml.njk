@@ -1,0 +1,12 @@
+apiVersion: kagent.dev/v1
+kind: ToolServer
+metadata:
+  name: sandbox
+  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  description: "Sandboxed Python code execution service for Dataset Whisperer"
+  transport:
+    httpsse:
+      url: http://sandbox.sandbox.svc.cluster.local:8080

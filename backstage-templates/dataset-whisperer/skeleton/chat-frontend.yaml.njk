@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chat-frontend-{{ values.agent_name }}-{{ values.suffix }}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: http://gitea.gitea.svc.cluster.local/whisperops/whisperops.git
+    targetRevision: HEAD
+    path: platform/helm/chat-frontend
+    helm:
+      releaseName: chat-frontend-{{ values.agent_name }}-{{ values.suffix }}
+      values: |
+        agentId: agent-{{ values.agent_name }}-{{ values.suffix }}
+        baseDomain: {{ values.base_domain | default('sslip.io') }}
+        plannerUrl: http://planner.agent-{{ values.agent_name }}-{{ values.suffix }}.svc.cluster.local:8080
+        ingress:
+          enabled: true
+          tls:
+            - secretName: agent-{{ values.agent_name }}-{{ values.suffix }}-tls
+              hosts:
+                - agent-{{ values.agent_name }}-{{ values.suffix }}.{{ values.base_domain | default('sslip.io') }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

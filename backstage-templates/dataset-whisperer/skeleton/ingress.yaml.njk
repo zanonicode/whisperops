@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-{{ values.agent_name }}-{{ values.suffix }}
+  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  labels:
+    whisperops.io/agent: agent-{{ values.agent_name }}-{{ values.suffix }}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: agent-{{ values.agent_name }}-{{ values.suffix }}.{{ values.base_domain | default('sslip.io') }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-frontend-{{ values.agent_name }}-{{ values.suffix }}
+                port:
+                  number: 3000
+  tls:
+    - secretName: agent-{{ values.agent_name }}-{{ values.suffix }}-tls
+      hosts:
+        - agent-{{ values.agent_name }}-{{ values.suffix }}.{{ values.base_domain | default('sslip.io') }}

@@ -1,0 +1,28 @@
+apiVersion: kyverno.io/v1
+kind: Policy
+metadata:
+  name: agent-egress-policy
+  namespace: agent-{{ values.agent_name }}-{{ values.suffix }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    policies.kyverno.io/title: Agent-specific Egress Allowlist
+    policies.kyverno.io/description: >-
+      Per-agent namespace egress policy for {{ values.agent_name }}-{{ values.suffix }}.
+      Allows traffic to sandbox, Supabase, Anthropic API, and DNS only.
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: restrict-egress
+      match:
+        any:
+          - resources:
+              kinds:
+                - NetworkPolicy
+      validate:
+        message: "Egress policies in this namespace must not expand beyond the approved set."
+        deny:
+          conditions:
+            any:
+              - key: "{{ `{{request.object.metadata.name}}` }}"
+                operator: NotEquals
+                value: "default-egress"
