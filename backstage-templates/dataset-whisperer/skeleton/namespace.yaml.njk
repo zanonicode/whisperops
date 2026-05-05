@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: agent-{{ values.agent_name }}
+  name: agent-${{ values.agent_name }}
   labels:
     whisperops.io/managed-by: backstage
-    whisperops.io/dataset: {{ values.dataset_id }}
-    whisperops.io/agent-name: {{ values.agent_name }}
+    whisperops.io/dataset: ${{ values.dataset_id }}
+    whisperops.io/agent-name: ${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "0"

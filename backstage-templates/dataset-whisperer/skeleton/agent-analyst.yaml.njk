@@ -2,15 +2,15 @@ apiVersion: kagent.dev/v1
 kind: Agent
 metadata:
   name: analyst
-  namespace: agent-{{ values.agent_name }}
+  namespace: agent-${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
-    whisperops.io/budget-usd: "{{ values.budget_usd | default('5.00') }}"
+    whisperops.io/budget-usd: "${{ values.budget_usd | default('5.00') }}"
     whisperops.io/role: analyst
 spec:
   model:
     provider: anthropic
-    modelId: {{ values.primary_model }}
+    modelId: ${{ values.primary_model }}
   systemPromptConfigMapRef:
     name: prompt-analyst
     namespace: whisperops-system
@@ -21,6 +21,6 @@ spec:
   observability:
     otlpEndpoint: http://otel-collector.observability:4317
     tags:
-      - agent-{{ values.agent_name }}
-      - dataset:{{ values.dataset_id }}
+      - agent-${{ values.agent_name }}
+      - dataset:${{ values.dataset_id }}
       - role:analyst

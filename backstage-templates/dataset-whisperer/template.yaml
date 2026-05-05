@@ -95,6 +95,17 @@ spec:
         repoUrl: cnoe.localtest.me:8443/gitea?repo=agent-${{ parameters.agent_name }}
         defaultBranch: main
 
+    - id: create-argocd-app
+      name: Create ArgoCD Application
+      action: cnoe:create-argocd-app
+      input:
+        appName: agent-${{ parameters.agent_name }}
+        appNamespace: agent-${{ parameters.agent_name }}
+        argoInstance: in-cluster
+        projectName: default
+        repoUrl: https://cnoe.localtest.me:8443/gitea/giteaAdmin/agent-${{ parameters.agent_name }}
+        path: "."
+
     # catalog:register intentionally omitted — Backstage's catalog ingester
     # auto-discovers the catalog-info.yaml from the Gitea repo via the
     # location registered on the first scaffolder run for this agent name.
