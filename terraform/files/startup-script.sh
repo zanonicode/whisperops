@@ -37,11 +37,14 @@ install -m 0755 "${TMPDIR}/idpbuilder" /usr/local/bin/idpbuilder
 rm -rf "${TMPDIR}"
 log "idpbuilder installed at $(which idpbuilder)"
 
-# 4. Bootstrap the in-cluster IDP (with Backstage package)
-log "Running idpbuilder create with Backstage stack"
+# 4. Bootstrap the in-cluster IDP (with the CNOE ref-implementation stack:
+#    Backstage, Keycloak, external-secrets, argo-workflows, backstage-templates,
+#    metric-server, spark-operator). The package URL must point at the directory
+#    containing the *.yaml Application manifests, not at a sub-chart directory.
+log "Running idpbuilder create with CNOE ref-implementation stack"
 idpbuilder create \
   --use-path-routing \
-  -p https://github.com/cnoe-io/stacks//backstage
+  -p https://github.com/cnoe-io/stacks//ref-implementation
 log "idpbuilder create completed"
 
 # 5. Distribute kubeconfig to ubuntu user
