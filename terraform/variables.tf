@@ -26,8 +26,3 @@ variable "allowed_ssh_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
-
-variable "state_bucket_name" {
-  description = "Name of the GCS bucket used for Terraform remote state. Set via -backend-config=backend.tfvars."
-  type        = string
-}
