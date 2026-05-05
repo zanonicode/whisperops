@@ -11,6 +11,22 @@
 | `helm` | >= 3.16 | Chart linting (optional locally) |
 | `kubectl` | >= 1.31 | Cluster interaction post-deploy |
 
+### DNS prerequisite — `*.localtest.me` must resolve to `127.0.0.1`
+
+The in-cluster IDP (idpbuilder) routes ArgoCD, Gitea, and Backstage through `cnoe.localtest.me`, a public DNS entry that points to `127.0.0.1`. Verify:
+
+```bash
+dig +short cnoe.localtest.me   # expected: 127.0.0.1
+```
+
+If your network filters/rewrites `localtest.me` (some corporate DNS does), fall back to `/etc/hosts`:
+
+```bash
+echo "127.0.0.1 cnoe.localtest.me argocd.cnoe.localtest.me gitea.cnoe.localtest.me backstage.cnoe.localtest.me" | sudo tee -a /etc/hosts
+```
+
+Without this, the SSH tunnel will work but browsers won't reach the IDP UIs.
+
 ## Step 1: Authenticate with GCP
 
 ```bash

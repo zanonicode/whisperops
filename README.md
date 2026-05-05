@@ -29,6 +29,24 @@ Backstage (self-service form)
 | `node` | ≥ 20 | Backstage / TypeScript |
 | `python` | 3.12 | Local tooling |
 
+### DNS prerequisite — `*.localtest.me` must resolve to `127.0.0.1`
+
+The in-cluster IDP uses `cnoe.localtest.me` (a public DNS entry that points at `127.0.0.1`) as the routing hostname. This is automatic for most networks because `localtest.me` is a real public DNS zone and queries return `127.0.0.1` for any subdomain. **Verify on your laptop:**
+
+```bash
+dig +short cnoe.localtest.me
+# Expected output: 127.0.0.1
+```
+
+If that returns nothing or a different IP — common in corporate networks that filter or rewrite public DNS — add a fallback to `/etc/hosts`:
+
+```bash
+echo "127.0.0.1 cnoe.localtest.me argocd.cnoe.localtest.me gitea.cnoe.localtest.me backstage.cnoe.localtest.me" \
+  | sudo tee -a /etc/hosts
+```
+
+Without this resolution working, browser access to ArgoCD/Gitea/Backstage URLs will fail even with the SSH tunnel up.
+
 ## Quickstart
 
 ```bash
