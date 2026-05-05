@@ -1,0 +1,24 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-gcp
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  package: xpkg.upbound.io/upbound/provider-gcp:v0.42.0
+  packagePullPolicy: IfNotPresent
+  revisionActivationPolicy: Automatic
+  revisionHistoryLimit: 1
+  controllerConfigRef:
+    name: provider-gcp-config
+---
+apiVersion: pkg.crossplane.io/v1alpha1
+kind: ControllerConfig
+metadata:
+  name: provider-gcp-config
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  serviceAccountName: provider-gcp
+  args:
+    - --debug
