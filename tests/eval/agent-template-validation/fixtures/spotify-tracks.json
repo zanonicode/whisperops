@@ -1,0 +1,17 @@
+{
+  "dataset_id": "spotify-tracks",
+  "test_question": "Which music genres have the highest average danceability, and what are the top 5 most popular tracks?",
+  "expected_response_shape": {
+    "has_text": true,
+    "has_chart": true,
+    "expected_chart_types": ["bar", "scatter", "violin"],
+    "expected_content_keywords": ["genre", "danceability", "popularity", "track", "energy"],
+    "max_response_time_s": 30
+  },
+  "dataset_metadata": {
+    "csv_filename": "spotify-tracks.csv",
+    "archetype": "exploratory",
+    "approximate_rows": 113000,
+    "key_columns": ["track_id", "artists", "album_name", "track_name", "popularity", "danceability", "energy", "track_genre"]
+  }
+}

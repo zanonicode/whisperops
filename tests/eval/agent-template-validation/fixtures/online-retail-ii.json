@@ -1,0 +1,17 @@
+{
+  "dataset_id": "online-retail-ii",
+  "test_question": "What are the top 10 selling products by revenue, and how does sales volume trend over time?",
+  "expected_response_shape": {
+    "has_text": true,
+    "has_chart": true,
+    "expected_chart_types": ["bar", "line", "timeseries"],
+    "expected_content_keywords": ["revenue", "product", "sales", "trend", "month", "quantity"],
+    "max_response_time_s": 30
+  },
+  "dataset_metadata": {
+    "csv_filename": "online_retail_II.csv",
+    "archetype": "time-series",
+    "approximate_rows": 1067371,
+    "key_columns": ["Invoice", "StockCode", "Description", "Quantity", "InvoiceDate", "Price", "Customer ID", "Country"]
+  }
+}

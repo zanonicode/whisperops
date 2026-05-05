@@ -1,0 +1,17 @@
+{
+  "dataset_id": "california-housing",
+  "test_question": "What is the median house value in this dataset, and what features are most correlated with price?",
+  "expected_response_shape": {
+    "has_text": true,
+    "has_chart": true,
+    "expected_chart_types": ["scatter", "heatmap", "bar"],
+    "expected_content_keywords": ["median", "price", "correlation", "ocean_proximity", "longitude"],
+    "max_response_time_s": 30
+  },
+  "dataset_metadata": {
+    "csv_filename": "california-housing-prices.csv",
+    "archetype": "regression",
+    "approximate_rows": 20640,
+    "key_columns": ["longitude", "latitude", "housing_median_age", "total_rooms", "median_house_value", "ocean_proximity"]
+  }
+}
