@@ -1,0 +1,10 @@
+{
+  "dataset_id": "california-housing",
+  "csv_filename": "california-housing-prices.csv",
+  "n_rows": 0,
+  "n_cols": 0,
+  "columns": [],
+  "archetype": "regression",
+  "description": "Placeholder — bootstrap pod generates and populates this profile.",
+  "source_hash": ""
+}

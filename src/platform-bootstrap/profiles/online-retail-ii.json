@@ -1,0 +1,10 @@
+{
+  "dataset_id": "online-retail-ii",
+  "csv_filename": "online_retail_II.csv",
+  "n_rows": 0,
+  "n_cols": 0,
+  "columns": [],
+  "archetype": "time-series",
+  "description": "Placeholder — bootstrap pod generates and populates this profile.",
+  "source_hash": ""
+}
