@@ -20,7 +20,14 @@ apt-get install -y docker.io git curl
 log "Enabling Docker"
 systemctl enable --now docker
 
-# 3. Download idpBuilder (released as a tarball since v0.10.x)
+# 3a. kubectl (idpbuilder ships kind but not kubectl, and we need it for ops)
+log "Installing kubectl"
+KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o /tmp/kubectl
+install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+rm /tmp/kubectl
+
+# 3b. Download idpBuilder (released as a tarball since v0.10.x)
 log "Downloading idpBuilder ${IDPBUILDER_VERSION}"
 IDPBUILDER_URL="https://github.com/cnoe-io/idpbuilder/releases/download/${IDPBUILDER_VERSION}/idpbuilder-${IDPBUILDER_ARCH}.tar.gz"
 TMPDIR="$(mktemp -d)"
