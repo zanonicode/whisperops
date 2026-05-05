@@ -7,8 +7,11 @@ age.key
 datasets/*.csv
 datasets/*.zip
 
-# Claude Code per-user config
-.claude/settings.local.json
+# Claude Code project metadata (agents, KBs, SDD artifacts) — operator-local
+.claude/
+
+# Operator notes
+notes/
 
 # Terraform
 .terraform/
