@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .observability import logger, tracer
 
@@ -34,9 +35,21 @@ DATASET_PATH = os.getenv(
 )
 EXECUTION_TIMEOUT_S = int(os.getenv("EXECUTION_TIMEOUT_S", "60"))
 
+# DNS rebinding protection: kagent reaches us via cluster DNS like
+# `sandbox.sandbox.svc.cluster.local`. FastMCP's default allow-list is
+# localhost-only, which would reject those calls with HTTP 421.
+# We turn the protection off rather than maintain a per-cluster host list —
+# this service is only reachable from inside the cluster (NetworkPolicy
+# limits ingress to `kagent-system`), so DNS rebinding is moot.
+_TRANSPORT = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
 # streamable_http_path="/" means the MCP endpoint is at the mount root;
 # the outer FastAPI mount adds the "/mcp" prefix.
-mcp = FastMCP("sandbox", streamable_http_path="/")
+mcp = FastMCP(
+    "sandbox",
+    streamable_http_path="/",
+    transport_security=_TRANSPORT,
+)
 
 
 _PRELUDE = """
