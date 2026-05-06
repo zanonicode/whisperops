@@ -1,10 +1,8 @@
 # lgtm-distributed values overrides for whisperops.
-# Enables Tempo OTLP ingest so the OTel Collector can ship traces to it.
-# Disables anti-affinity / spread (single-node kind cluster).
+# Enables Tempo OTLP ingest, sets replication factor to 1 for single-node
+# kind, and removes anti-affinity / topology-spread that prevent scheduling
+# on a single-node cluster.
 tempo:
-  # Single-node kind cluster cannot satisfy the chart default of 2-replica
-  # write paths. Set everything to 1 and disable redundancy checks.
-  replicationFactor: 1
   metricsGenerator:
     enabled: false
   traces:
@@ -13,10 +11,12 @@ tempo:
         enabled: true
       http:
         enabled: true
-  distributor:
+  ingester:
     affinity: {}
     topologySpreadConstraints: []
-  ingester:
+    config:
+      replication_factor: 1
+  distributor:
     affinity: {}
     topologySpreadConstraints: []
   querier:
