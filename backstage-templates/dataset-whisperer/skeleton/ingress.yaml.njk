@@ -23,7 +23,7 @@ spec:
               service:
                 name: chat-frontend-${{ values.agent_name }}
                 port:
-                  number: 80
+                  number: 3000
   tls:
     - secretName: agent-${{ values.agent_name }}-tls
       hosts:

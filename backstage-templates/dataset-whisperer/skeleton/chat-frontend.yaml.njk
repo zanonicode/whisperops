@@ -1,11 +1,78 @@
-# Demo wiring: route the per-agent chat URL to kagent's built-in UI in
-# kagent-system. ExternalName Service crosses namespaces; the per-agent
-# Ingress (ingress.yaml) then targets this Service in the same namespace.
-#
-# Trade-off: the kagent UI shows ALL agents in the cluster (the user picks
-# `planner` from a dropdown) instead of being scoped to this one agent.
-# Acceptable for a first end-to-end demo. A purpose-built per-agent chat UI
-# is tracked as Phase 3 in docs/NEXT_STEPS.md and would replace this file.
+# Per-agent chat UI: a Next.js app that talks directly to kagent's session
+# API and streams responses back to the browser. Scoped to ONE agent (the
+# planner of this scaffolded app) via env vars.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-frontend-${{ values.agent_name }}
+  namespace: agent-${{ values.agent_name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    app: chat-frontend
+    whisperops.io/agent: agent-${{ values.agent_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chat-frontend
+      whisperops.io/agent: agent-${{ values.agent_name }}
+  template:
+    metadata:
+      labels:
+        app: chat-frontend
+        whisperops.io/agent: agent-${{ values.agent_name }}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: chat-frontend
+          image: docker.io/whisperops/chat-frontend:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: KAGENT_BASE_URL
+              value: "http://kagent.kagent-system.svc.cluster.local"
+            - name: AGENT_NAMESPACE
+              value: "agent-${{ values.agent_name }}"
+            - name: AGENT_NAME
+              value: "planner"
+            - name: USER_ID
+              value: "demo@whisperops"
+            - name: NEXT_PUBLIC_AGENT_ID
+              value: "agent-${{ values.agent_name }}"
+            - name: NEXT_PUBLIC_OTEL_ENDPOINT
+              value: "http://otel-collector.observability:4318"
+            - name: NODE_ENV
+              value: "production"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,10 +83,12 @@ metadata:
   labels:
     whisperops.io/agent: agent-${{ values.agent_name }}
 spec:
-  type: ExternalName
-  externalName: kagent.kagent-system.svc.cluster.local
+  type: ClusterIP
+  selector:
+    app: chat-frontend
+    whisperops.io/agent: agent-${{ values.agent_name }}
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 3000
+      targetPort: 3000
       protocol: TCP
       name: http
