@@ -1,4 +1,6 @@
 import type { NextRequest } from 'next/server';
+import { SpanStatusCode } from '@opentelemetry/api';
+import { getServerTracer } from '../../../lib/server-tracing';
 
 /**
  * Chat route handler — proxies user messages to kagent's session API and
@@ -78,6 +80,29 @@ interface InvokeMessage {
 }
 
 async function invoke(sessionId: string, task: string): Promise<string> {
+  const tracer = getServerTracer();
+  return tracer.startActiveSpan('kagent.invoke', async (span) => {
+    span.setAttribute('agent.id', AGENT_NAMESPACE);
+    span.setAttribute('agent.role', AGENT_NAME);
+    span.setAttribute('agent.ref', AGENT_REF);
+    span.setAttribute('kagent.session_id', sessionId);
+    span.setAttribute('user.id', USER_ID);
+    try {
+      const reply = await invokeInner(sessionId, task);
+      span.setAttribute('reply.length', reply.length);
+      return reply;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      span.recordException(err instanceof Error ? err : new Error(msg));
+      span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+async function invokeInner(sessionId: string, task: string): Promise<string> {
   const teamConfig = await fetchTeamConfig();
   const url = `${KAGENT_BASE_URL}/api/sessions/${sessionId}/invoke?user_id=${encodeURIComponent(USER_ID)}`;
   const res = await fetch(url, {
@@ -114,9 +139,17 @@ function sseChunk(payload: object): Uint8Array {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const tracer = getServerTracer();
+  const span = tracer.startSpan('chat.handle');
+  span.setAttribute('agent.id', AGENT_NAMESPACE);
+  span.setAttribute('agent.ref', AGENT_REF);
+
   const reqBody = (await req.json()) as { message?: string };
   const message = (reqBody.message ?? '').trim();
+  span.setAttribute('message.length', message.length);
   if (!message) {
+    span.setStatus({ code: SpanStatusCode.ERROR, message: 'empty message' });
+    span.end();
     return new Response(JSON.stringify({ error: 'message is required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -139,11 +172,15 @@ export async function POST(req: NextRequest): Promise<Response> {
         const reply = await invoke(sessionId!, message);
         controller.enqueue(sseChunk({ content: reply }));
         controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        span.setStatus({ code: SpanStatusCode.OK });
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'invoke failed';
         controller.enqueue(sseChunk({ error: msg }));
+        span.recordException(err instanceof Error ? err : new Error(msg));
+        span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
       } finally {
         controller.close();
+        span.end();
       }
     },
   });
