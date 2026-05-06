@@ -77,8 +77,16 @@ config:
   exporters:
     debug:
       verbosity: basic
-    otlphttp/tempo:
-      endpoint: http://lgtm-distributed-tempo-distributor.observability.svc.cluster.local:4318
+    # We deploy a SECOND Tempo (monolithic, single-binary) alongside
+    # lgtm-distributed because the distributed Tempo's distributor enforces
+    # a "min 2 live ingester replicas" check that can't be turned off in
+    # single-node mode (replication_factor: 1 doesn't help — it's a
+    # separate ring health check). The monolithic chart works on single
+    # node out of the box. Both Tempos write to local storage; only this
+    # one is wired into the OTel pipeline. lgtm-distributed Tempo remains
+    # for future multi-node use.
+    otlp/tempo:
+      endpoint: tempo-mono.observability.svc.cluster.local:4317
       tls:
         insecure: true
 
@@ -90,7 +98,7 @@ config:
       traces:
         receivers: [otlp]
         processors: [k8sattributes, resource, batch]
-        exporters: [otlphttp/tempo, debug]
+        exporters: [otlp/tempo, debug]
       # Logs and metrics pipelines deferred — first prove traces work end-to-end.
 
 # k8sattributes processor needs RBAC to read pods cluster-wide.

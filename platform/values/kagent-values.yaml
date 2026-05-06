@@ -21,3 +21,27 @@ app:
         secretKeyRef:
           name: anthropic-api-key
           key: api-key
+    # The chart hardcodes AUTOGEN_DISABLE_RUNTIME_TRACING=true, which kills
+    # all LLM/agent spans. Re-declaring with "false" causes Kubernetes to use
+    # the second occurrence (the appended one wins), turning runtime tracing
+    # back on so spans actually flow to the OTel collector.
+    - name: AUTOGEN_DISABLE_RUNTIME_TRACING
+      value: "false"
+    # Resource attribute so Tempo/Grafana can group spans by service.
+    - name: OTEL_SERVICE_NAME
+      value: "kagent-app"
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.namespace=kagent-system,deployment.environment=dev"
+
+# Enable OTel tracing -> in-cluster otel-collector. Our collector exports
+# to Tempo (http://lgtm-distributed-tempo-distributor:4318) and the
+# k8sattributes processor enriches every span with the agent.id /
+# agent.role labels lifted from the pod.
+otel:
+  tracing:
+    enabled: true
+    exporter:
+      otlp:
+        endpoint: http://opentelemetry-collector.observability.svc.cluster.local:4317
+        timeout: 15
+        insecure: true

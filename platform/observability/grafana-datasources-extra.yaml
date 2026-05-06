@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-tempo-mono-datasource
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  tempo-mono.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo-mono.observability.svc.cluster.local:3100
+        isDefault: false
+        editable: true
+        jsonData:
+          serviceMap:
+            datasourceUid: prom
+          nodeGraph:
+            enabled: true
+          tracesToLogsV2:
+            datasourceUid: loki
+            tags: [{ key: 'service.name', value: 'service' }]
+            mappedTags: [{ key: 'service.name', value: 'service' }]
+        deleteDatasources:
+          - { name: Tempo, orgId: 1 }

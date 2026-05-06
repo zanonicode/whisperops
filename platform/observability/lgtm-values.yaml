@@ -41,3 +41,7 @@ grafana:
       folder: /tmp/dashboards
       provider:
         foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+      label: grafana_datasource
+      labelValue: "1"

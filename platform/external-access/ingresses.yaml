@@ -1,0 +1,138 @@
+# External-access Ingresses for the whisperops prototype.
+#
+# The CNOE ref-implementation creates Ingresses keyed on `cnoe.localtest.me`,
+# which only resolves on the VM itself (it's a magic localhost-only domain).
+# To make Backstage / Grafana / ArgoCD reachable from a browser running off-VM,
+# we add an extra Ingress per surface keyed on `<svc>.<vm-external-ip>.sslip.io`.
+#
+# sslip.io resolves any `*.X.Y.Z.W.sslip.io` to that exact IPv4. So once GCP
+# firewall opens TCP 8443 on the VM, the browser can hit:
+#   https://backstage.136.115.224.138.sslip.io:8443/
+#
+# The ingress-nginx controller maps host port 8443 -> kind container 443
+# (idpbuilder convention).
+#
+# When the VM IP changes, regenerate this file with `make external-ingresses`
+# (or kubectl apply -f after sed-replacing the IP).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backstage-external
+  namespace: backstage
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: backstage.136.115.224.138.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backstage
+                port:
+                  number: 7007
+  tls:
+    - hosts: [backstage.136.115.224.138.sslip.io]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-external
+  namespace: observability
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: grafana.136.115.224.138.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lgtm-distributed-grafana
+                port:
+                  number: 80
+  tls:
+    - hosts: [grafana.136.115.224.138.sslip.io]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-external
+  namespace: argocd
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: argocd.136.115.224.138.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80
+  tls:
+    - hosts: [argocd.136.115.224.138.sslip.io]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-housing-demo-external
+  namespace: agent-housing-demo
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: agent-housing-demo.136.115.224.138.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-frontend-housing-demo
+                port:
+                  number: 3000
+  tls:
+    - hosts: [agent-housing-demo.136.115.224.138.sslip.io]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitea-external
+  namespace: gitea
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: gitea.136.115.224.138.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-gitea-http
+                port:
+                  number: 3000
+  tls:
+    - hosts: [gitea.136.115.224.138.sslip.io]
