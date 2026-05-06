@@ -1,3 +1,6 @@
+> **Superseded.** See [docs/OPERATIONS.md §1](OPERATIONS.md#1--end-to-end-deploy-guide) for the current canonical deploy guide.
+> The content below is preserved for historical context; some details may be stale post-DESIGN v1.4 (live-deploy reconciliation, DD-15..DD-31).
+
 # Deployment Guide
 
 ## Prerequisites

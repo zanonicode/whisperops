@@ -1,3 +1,6 @@
+> **Superseded.** See [docs/OPERATIONS.md §3](OPERATIONS.md#3--observability-navigation) for the current canonical observability guide.
+> The content below is preserved for historical context; some details may be stale post-DESIGN v1.4 (Langfuse Cloud activation in DD-24/v1.6, tempo-mono in DD-21/DD-30, budget-controller in DD-28).
+
 # Observability
 
 ## Grafana Dashboards

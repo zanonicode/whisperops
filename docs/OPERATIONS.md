@@ -1,0 +1,478 @@
+# WhisperOps — Operations Handbook
+
+> Canonical operator-facing guide for the v0.3 prototype. Reflects DESIGN v1.7 (DD-1 through DD-31) and the v1.4 live-deploy reconciliation. Three sections:
+>
+> 1. **End-to-end deploy guide** — Stage 0 (preflight) through Stage 9 (first agent)
+> 2. **Backstage deploy + agent interaction** — using the platform once it's up
+> 3. **Observability navigation** — Grafana, Tempo, Loki, Mimir, Langfuse Cloud
+>
+> Audience: senior platform engineer comfortable with Kubernetes, Helm, GCP, SOPS. We don't re-explain those primitives. Cross-reference DESIGN decisions (DD-NN) for *why*; this doc explains *how*.
+
+---
+
+## §1 — End-to-end deploy guide
+
+### Prereqs
+
+Verify each before Stage 0. Most are checked by `make preflight`.
+
+| Item | Required | Check |
+|---|---|---|
+| `gcloud` authed (Application Default Credentials) | Yes | `gcloud auth application-default print-access-token` |
+| Target GCP project ID known and billing enabled | Yes | `gcloud projects describe <id>` |
+| Repo cloned at a stable path | Yes | `git rev-parse --show-toplevel` |
+| age key at `./age.key` (root of repo) | Yes | `[ -f age.key ]` |
+| `SOPS_AGE_KEY_FILE=$PWD/age.key` exported | Yes | `echo $SOPS_AGE_KEY_FILE` |
+| `secrets/*.enc.yaml` present and SOPS-encrypted (anthropic, openai, supabase, langfuse, crossplane-gcp-creds) | Yes | `grep -l '^sops:' secrets/*.enc.yaml \| wc -l` → 5 |
+| `terraform.tfvars` and `backend.tfvars` customised (no `YOUR_GCP_PROJECT_ID` placeholders) | Yes | `make preflight` |
+| Tooling on local machine: `terraform>=1.7`, `gcloud`, `age`, `sops`, `kubectl>=1.29`, `helm>=3.14`, `helmfile>=0.163`, `make`, `node>=20`, `python3.12`, `yq` (DD-31), `jq` | Yes | `which yq jq` |
+| `cnoe.localtest.me` resolves to `127.0.0.1` (only matters when port-forwarding from the VM; sslip.io URLs avoid this) | Optional | `dig +short cnoe.localtest.me` |
+| Local clock not skewed (SOPS will refuse decrypts otherwise) | Yes | `sudo systemctl status systemd-timesyncd` (Linux) / `sntp -sS time.apple.com` (macOS) |
+
+To decrypt a secret to its plaintext sibling for inspection (gitignored):
+
+```bash
+make decrypt-secrets
+# Produces secrets/{anthropic,openai,supabase,langfuse,crossplane-gcp-creds}.dec.yaml
+```
+
+You don't need to do this for the deploy — the Makefile and `kubectl create secret` flows below decrypt on demand.
+
+### Stage 0 — preflight
+
+```bash
+# From repo root.
+export SOPS_AGE_KEY_FILE=$PWD/age.key
+make preflight
+```
+
+Confirms gcloud auth, tfvars customisation, required GCP APIs enabled (compute, storage, iam, iamcredentials), tfstate bucket exists, DNS, age key, and all five SOPS files. **All seven checks must pass before continuing.**
+
+### Stage 1 — cloud floor (Terraform)
+
+Provisions everything in DD-14 + DD-19's "TF tier":
+
+- VPC + subnet + firewall (22 from your CIDR, 80/443/8443 from 0.0.0.0/0 — port 8443 covers DD-23 ingress)
+- Static external IP + GCE `e2-standard-8` VM (`whisperops-vm`, `ubuntu-2204-lts`) with the idpbuilder bootstrap script as user-data
+- Shared GCS buckets: `{project}-tfstate`, `{project}-datasets`
+- Bootstrap GCP service account `whisperops-bootstrap@{project}.iam.gserviceaccount.com` with `iam.serviceAccountAdmin`, `iam.serviceAccountKeyAdmin`, `resourcemanager.projectIamAdmin`, `storage.admin`, `artifactregistry.writer` — all unconditional per DD-19 (IAM Conditions don't gate `*.create` operations because `resource.name` is empty at create time; conditions were security-theatre)
+- Artifact Registry repo `whisperops-images` (DD-14)
+
+```bash
+make tf-apply PROJECT_ID=<your-project-id>
+terraform -chdir=terraform output -raw vm_external_ip
+terraform -chdir=terraform output -raw registry_url
+```
+
+Capture both outputs — you'll need them in Stages 4, 5, and 7.
+
+### Stage 2 — VM bootstrap (IDP layer)
+
+The startup script installs Docker + idpbuilder and runs `idpbuilder create --use-path-routing`, which deploys the CNOE ref-implementation (`platform/idp/`, vendored): ArgoCD, Gitea, Backstage, Keycloak, External Secrets Operator, NGINX Ingress, cert-manager, argo-workflows, metric-server, spark-operator. Wait roughly 6–8 minutes after `tf-apply` returns.
+
+```bash
+gcloud compute ssh whisperops-vm --zone=us-central1-a -- \
+  'sudo kubectl --kubeconfig=/root/.kube/config get applications -n argocd'
+# Expect: 8-9 apps Synced/Healthy
+```
+
+The `/root/.kube/config` fallback in `terraform/files/startup-script.sh` exists because idpbuilder's HOME-detection writes the kubeconfig to `/.kube/config` when run under systemd (HOME=/) — the script symlinks the result to `/root/.kube/config` so subsequent `kubectl` commands work without `--kubeconfig` on the VM if you `sudo -i` first.
+
+**Known recurring failure:** the CNOE Keycloak config-job is non-idempotent — if it crashes between realm creation and Secret creation, the next run sees the realm and exits 0 without producing the `keycloak-clients` Secret. Recovery: `kubectl delete ns keycloak && argocd app sync keycloak`.
+
+### Stage 3 — copy whisperops repo to the VM
+
+The application platform layer (Stage 4) runs `helmfile apply` from inside the VM, and helmfile's value-file refs (`platform/values/*.yaml`, `platform/observability/*.yaml`) are resolved relative to the file. Push the repo onto the VM:
+
+```bash
+gcloud compute scp --zone=us-central1-a --recurse \
+  $(git rev-parse --show-toplevel) whisperops-vm:/tmp/whisperops/
+```
+
+(`rsync` over SSH is fine too — the directory layout is what matters.)
+
+### Stage 4 — application platform layer (helmfile)
+
+SSH in, install helm + helmfile if absent, then apply. Per DD-27, this is the **official v0.3 deploy mechanism** for the platform layer — ArgoCD's `root-app.yaml` is a v0.4 stub.
+
+```bash
+gcloud compute ssh whisperops-vm --zone=us-central1-a
+# On the VM:
+sudo -i
+cd /tmp/whisperops
+
+# Pre-create the kagent namespace (chart hardcodes some resources to it)
+kubectl --kubeconfig=/root/.kube/config create ns kagent
+kubectl --kubeconfig=/root/.kube/config create ns kagent-system
+kubectl --kubeconfig=/root/.kube/config create ns observability
+
+# Apply
+KUBECONFIG=/root/.kube/config helmfile -f platform/helmfile.yaml.gotmpl apply
+```
+
+Expected releases (5 + 1):
+
+| Release | Namespace | Source | Purpose |
+|---|---|---|---|
+| `crossplane` | crossplane-system | upstream Helm | Per-agent GCP resources via family providers (DD-2, DD-12) |
+| `kyverno` | kyverno | upstream Helm | Policy enforcement |
+| `lgtm-distributed` | observability | grafana Helm | Loki + Mimir + Grafana (Tempo sub-chart **disabled** per DD-30) |
+| `opentelemetry-collector` | observability | upstream Helm | Trace pipeline (dual-export per DD-24/v1.6) |
+| `kagent` | kagent-system | OCI `ghcr.io/kagent-dev/kagent/helm/kagent` | Agent runtime (postRender per DD-31) |
+| `tempo-mono` | observability | grafana Helm v1.18.0 | **Standalone single-binary Tempo** — sole tracing backend (DD-21, DD-30) |
+
+The kagent release is layered with `platform/values/kagent-values.yaml` (declarative `ANTHROPIC_API_KEY` injection per DD-20) and the postRender script `platform/values/kagent-postrender.sh` (DD-31, requires `yq` on PATH) which guarantees exactly one `AUTOGEN_DISABLE_RUNTIME_TRACING=false` env entry on the rendered Deployment.
+
+Verify:
+
+```bash
+kubectl --kubeconfig=/root/.kube/config get pods -A | grep -E 'crossplane|kyverno|kagent|otel|tempo|grafana|mimir|loki'
+kubectl --kubeconfig=/root/.kube/config get providers.pkg.crossplane.io
+# Expect: provider-gcp-storage, provider-gcp-iam, provider-gcp-cloudplatform, provider-family-gcp — all Healthy=True
+```
+
+### Stage 5 — secrets materialization (order matters)
+
+Run from your **local workstation** (where SOPS has the age key), not the VM. `kubectl` here uses your local kubeconfig pointing at the VM cluster — set up an SSH tunnel or scp `~/.kube/config` from `/tmp/whisperops/` first.
+
+#### 5a — Crossplane GCP credentials (must be first; providers can't reconcile without it)
+
+```bash
+SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/crossplane-gcp-creds.enc.yaml \
+  | kubectl apply -n crossplane-system -f -
+kubectl apply -f platform/crossplane/provider-config.yaml
+```
+
+> **Newline corruption gotcha (recurring):** the SOPS-decrypted JSON inside `gcp_service_account_key_json` may emerge with literal newlines inside the `private_key` string. If Crossplane's ProviderConfig logs `error unmarshaling credentials: invalid character '\n' in string literal`, run the parse-and-reescape repair pass from `docs/NEXT_STEPS.md §0.6` before applying.
+
+#### 5b — Langfuse credentials (DD-29)
+
+```bash
+make langfuse-secret
+# Decrypts secrets/langfuse.enc.yaml, derives LANGFUSE_OTLP_ENDPOINT and
+# LANGFUSE_BASIC_AUTH, applies langfuse-credentials Secret in observability ns.
+```
+
+This Secret is consumed by the OTel collector's `otlphttp/langfuse` exporter (`extraEnvs` with `optional: true`) and by Grafana's `envFromSecret` for the Infinity datasource. Rerun any time Langfuse keys rotate.
+
+#### 5c — Anthropic API key (kagent app container, DD-20)
+
+```bash
+SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/anthropic.enc.yaml \
+  | yq '.ANTHROPIC_API_KEY' \
+  | xargs -I{} kubectl create secret generic anthropic-api-key \
+      -n kagent-system --from-literal=api-key={} \
+      --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Restart kagent so the env var picks up: `kubectl rollout restart deploy/kagent -n kagent-system`.
+
+#### 5d — OpenAI API key (kagent UI sidecar)
+
+```bash
+SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/openai.enc.yaml \
+  | yq '.OPENAI_API_KEY' \
+  | xargs -I{} kubectl create secret generic kagent-openai \
+      -n kagent-system --from-literal=OPENAI_API_KEY={} \
+      --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deploy/kagent -n kagent-system
+```
+
+The `kagent` Deployment will go from 4/5 ready to 5/5 once `kagent-openai` exists (the querydoc UI sidecar requires it).
+
+### Stage 6 — datasets upload
+
+```bash
+make upload-datasets PROJECT_ID=<your-project-id>
+# Copies datasets/*.csv to gs://<project-id>-datasets/
+```
+
+The three curated CSVs ship with the repo. Any additional dataset must be added under `datasets/`, then the platform-bootstrap Job re-run (`make regenerate-profiles`) to compute its profile JSON.
+
+### Stage 7 — external access (DD-23, DD-26)
+
+The CNOE NGINX ingress maps host `:8443` to kind container `:443`. Use sslip.io for wildcard DNS that requires no DNS configuration.
+
+```bash
+# Open the firewall (one-time per VM)
+gcloud compute firewall-rules create allow-kind-ingress \
+  --allow=tcp:8443 --target-tags=whisperops-vm
+
+# Generate Ingress manifests for the current VM IP and apply
+VM_IP=$(terraform -chdir=terraform output -raw vm_external_ip)
+make external-ingresses VM_IP=$VM_IP
+```
+
+This produces five Ingress objects (Backstage, ArgoCD, Gitea, Grafana, plus the agent-housing-demo example) under `https://<svc>.<vm-ip>.sslip.io:8443/`.
+
+The DD-26 `platform-config` ConfigMap (`base_domain: <vm-ip>.sslip.io`) drives the Backstage scaffolder's default `base_domain` so newly-scaffolded agents get the right host without operator typing. Update it whenever the VM IP changes:
+
+```bash
+kubectl create configmap platform-config -n whisperops-system \
+  --from-literal=base_domain=$VM_IP.sslip.io \
+  --from-literal=registry_url=$(terraform -chdir=terraform output -raw registry_url) \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+### Stage 8 — Artifact Registry pull secret (DD-14)
+
+Chicken-and-egg note: `ar-pull-secret` is created **per agent namespace**, so it can only be created after at least one `agent-*` namespace exists (i.e. after the first Backstage scaffold). On the very first deploy: scaffold one agent (Stage 9), let the pods land in `ImagePullBackOff`, then run:
+
+```bash
+make ar-pull-secret PROJECT_ID=<your-project-id>
+kubectl rollout restart deploy/sandbox -n agent-<name>
+kubectl rollout restart deploy/chat-frontend -n agent-<name>
+```
+
+The token from `gcloud auth print-access-token` expires every ~60 minutes — re-run `make ar-pull-secret` whenever pulls start failing 401.
+
+### Stage 9 — first agent (Backstage)
+
+See §2 below. After scaffolding, return to Stage 8 to refresh the pull secret if pods land in `ImagePullBackOff`.
+
+### Smoke tests
+
+`tests/smoke/` contains three scripts. Each accepts `IN_CLUSTER=1` for kubectl-port-forward mode (the practical default for a single-VM prototype where you don't always have firewall rules in place). Without `IN_CLUSTER=1` they hit the external sslip.io URLs.
+
+```bash
+# From the VM, with KUBECONFIG=/root/.kube/config
+IN_CLUSTER=1 bash tests/smoke/platform-up.sh
+IN_CLUSTER=1 bash tests/smoke/agent-creation.sh
+IN_CLUSTER=1 bash tests/smoke/query-roundtrip.sh
+```
+
+The `query-roundtrip.sh` script asks the agent a numerical question and asserts the response contains a price-related answer + a code block. `IN_CLUSTER=1` mode is currently only fully implemented for `query-roundtrip.sh` (the other two are external-only — see DESIGN §15 open item #2).
+
+### Known problems
+
+| Symptom | Cause | Remedy |
+|---|---|---|
+| Anthropic API returns `overloaded_error` mid-query | Transient Anthropic capacity issue | Retry. No code change. |
+| kagent autogen `sqlite UNIQUE constraint failed` after deleting and recreating an Agent CR | autogen v0.4.3 stores session state in an emptyDir-backed sqlite that doesn't reconcile with kagent's CR lifecycle | `kubectl rollout restart deploy/kagent -n kagent-system` (the emptyDir clears) |
+| `chat-frontend` pod `ImagePullBackOff` ~60 min after deploy | AR pull-secret token expired | `make ar-pull-secret PROJECT_ID=<id>` |
+| All sslip.io URLs unreachable after `terraform destroy && terraform apply` | VM external IP changed | `make external-ingresses VM_IP=<new-ip>`; update `platform-config` ConfigMap; **re-scaffold each agent via Backstage** (DD-25) — Gitea-side patches are reverted by ArgoCD selfHeal |
+| OTel collector logs `at least 2 live replicas required, could only find 0` | lgtm-distributed Tempo distributor enforces min-2-ingester even with `replication_factor: 1` (single-node infeasible) | DD-30: `tempo.enabled: false` in `platform/observability/lgtm-values.yaml`; tempo-mono is sole backend |
+| kagent emits zero spans even with `otel.tracing.enabled: true` | Chart hardcodes `AUTOGEN_DISABLE_RUNTIME_TRACING=true` (DD-22); override silently dropped if helmfile postRender script (DD-31) can't find `yq` on PATH | Install `yq` on the apply host; verify with `kubectl get deploy kagent -n kagent-system -o yaml \| grep -c AUTOGEN_DISABLE_RUNTIME_TRACING` (must be 1, value `false`) |
+| `sops --decrypt` fails with "Error getting data key: 0 successful groups required, got 0" on a fresh laptop | Local clock skewed; SOPS refuses with no helpful message | `sudo systemctl status systemd-timesyncd` (Linux) / `sntp -sS time.apple.com` (macOS). Resync, retry. |
+| Crossplane ProviderConfig `error unmarshaling credentials: invalid character '\n' in string literal` | SOPS-decrypted JSON has real newlines inside `private_key` | Repair pass — see `docs/NEXT_STEPS.md §0.6` |
+| `kubectl get apps -A` shows `agent-X` Healthy but agent chat returns 503 | Budget-controller (DD-28) detected spend ≥ budget; Kyverno blocked sessions | Increase budget annotation `whisperops.io/budget-usd` on the namespace, or wait for the next billing window |
+
+---
+
+## §2 — Backstage deploy + agent interaction
+
+### Accessing Backstage
+
+```
+https://backstage.<vm-ip>.sslip.io:8443/
+```
+
+The first time you load this, browsers will warn about the cert (Let's Encrypt + sslip.io interplay). Proceed anyway — this is a prototype.
+
+Login is via Keycloak (the CNOE ref-implementation provisions a default user `user1` / password retrievable via `kubectl get secret keycloak-config -n keycloak -o jsonpath='{.data.KEYCLOAK_ADMIN_PASSWORD}' | base64 -d`).
+
+### Filling the form
+
+Click **Create** → choose **Dataset Whisperer** template → click **Choose**. Fields:
+
+| Field | Type | Notes |
+|---|---|---|
+| `agent_name` | string (slug, lowercase, hyphenated) | Becomes the namespace `agent-<name>`, GCS bucket `agent-<name>`, GCP SA `agent-<name>@…`, and Gitea repo path. No suffix is appended (DD-13). |
+| `description` | string | Free-form, displayed on the agent's chat page header. |
+| `base_domain` | string | Defaults from the `platform-config` ConfigMap (DD-26). Must include the VM IP — e.g. `136.115.224.138.sslip.io`. Plain `sslip.io` resolves to nothing. |
+| `dataset_id` | enum | `california-housing`, `online-retail-ii`, `spotify-tracks`. Mounts the matching CSV into the agent's sandbox at startup. |
+| `primary_model` | enum | `claude-sonnet-4-5-20250929` is the v0.3 default for both `model-primary` and `model-planner` (DD-16; Haiku 4.5 is not classified as function-calling-capable by autogen v0.4.3, so the planner cannot use it). |
+| `budget_usd` | number | Annotation `whisperops.io/budget-usd`; budget-controller (DD-28) writes `whisperops.io/spend-usd` every 60s; Kyverno blocks new sessions when spend ≥ budget. |
+
+Submit. The scaffolder creates a Gitea repo at `gitea/whisperops/agent-<name>` and an ArgoCD `Application` pointing at it.
+
+### What happens after submit
+
+Roughly 60–90 seconds end-to-end on a warm cluster:
+
+1. Gitea repo created with the rendered skeleton (Crossplane CRDs, kagent ModelConfigs and Agents, ToolServer, Sandbox Deployment, chat-frontend Deployment, Ingress, Kyverno NetworkPolicy)
+2. ArgoCD syncs the Application → namespace `agent-<name>` is created
+3. Crossplane reconciles the four GCP resources: `Bucket`, `ServiceAccount`, `ServiceAccountKey`, two `ProjectIAMMember` (one for the agent's own bucket, one for read on the shared datasets bucket). The SA key Secret materializes via `writeConnectionSecretToRef` directly in the agent's namespace
+4. kagent reconciles the three Agents (planner, analyst, writer) → all reach `Accepted=True`
+5. Sandbox + chat-frontend pods come up. If they `ImagePullBackOff`, run `make ar-pull-secret PROJECT_ID=<id>`
+6. Per-agent Ingress is reachable at `https://agent-<name>.<vm-ip>.sslip.io:8443/`
+
+### Chatting with the agent
+
+Open the per-agent URL. Type a question. The chat-frontend route `app/api/chat/route.ts` does (1) `GET /api/agents/<ns>/<name>` to identify the planner, (2) `POST /api/sessions` (sticky-cookied per browser) to create or reuse a session, (3) `POST /api/sessions/<id>/invoke` with the user message, and (4) translates kagent's SSE stream into the browser-side SSE shape.
+
+Three example questions for the `california-housing` dataset:
+
+| Type | Prompt | Expected response shape |
+|---|---|---|
+| Numerical | "What is the median house price in this dataset?" | One-paragraph factual answer with the dollar value, plus a Python code block showing the `df['median_house_value'].median()` call |
+| Chart | "Plot the distribution of median income." | Markdown reply with an embedded chart URL (signed GCS URL into the per-agent bucket) plus the matplotlib code |
+| Code-style | "Show me the top 5 districts by population." | Tabular markdown rendering of a 5-row DataFrame, plus the `nlargest` code block |
+
+The planner runs Sonnet 4.5 (DD-16). The analyst calls `execute_python(code)` on the per-agent sandbox MCP server (`http://sandbox.agent-<name>.svc.cluster.local:8080/mcp/` — note trailing slash, the MCP server 307-redirects from bare `/mcp`). The writer composes the final markdown.
+
+The end-to-end "what is the median price?" smoke test takes ~6–10s on a warm cluster, ~30s cold.
+
+### Tearing down an agent
+
+```bash
+kubectl delete application agent-<name> -n argocd --cascade=foreground
+# Crossplane reconciles deletion of the GCS bucket + GCP SA + key + IAM bindings
+# Allow ~60s for full cloud cleanup. Confirm:
+gcloud iam service-accounts list --filter="email:agent-<name>@*"
+gcloud storage buckets list --filter="name:agent-<name>"
+# Both should be empty.
+```
+
+If you want to recreate the same agent with the same name, also delete the Gitea repo via API (`DELETE /api/v1/repos/whisperops/agent-<name>`) so the next Backstage scaffold doesn't fail with "repo exists".
+
+---
+
+## §3 — Observability navigation
+
+Three datasources, one Grafana, one external SaaS. Grafana is at `https://grafana.<vm-ip>.sslip.io:8443/` (admin password: `kubectl get secret -n observability lgtm-distributed-grafana -o jsonpath='{.data.admin-password}' | base64 -d`).
+
+### Grafana dashboards (provisioned via sidecar)
+
+The Grafana sidecar auto-loads any ConfigMap labelled `grafana_dashboard: "1"` in the `observability` namespace. Four dashboards land under the **whisperops** folder:
+
+| Dashboard | Datasource(s) | Key panels |
+|---|---|---|
+| **platform-health** | Mimir (`prom`), Loki (`loki`) | Cluster CPU/memory, ArgoCD synced/healthy app count, NGINX p50/p95/p99 latency, cert-manager expiries |
+| **agent-cost** | Infinity (`langfuse`) primary, Tempo (`tempo`) fallback | Total spend per agent (Langfuse REST), per-model token rollup, top-10 agents by cost, daily burn |
+| **agent-performance** | Tempo (`tempo`), Mimir (`prom`) | Query latency p50/p95/p99, A2A hop breakdown (planner→analyst→writer), error rate by error class |
+| **sandbox-execution** | Tempo (`tempo`), Mimir (`prom`) | Concurrent executions, OOM rate, timeout rate, signed-URL upload latency |
+
+### Tempo (TraceQL) — `tempo` datasource
+
+Pointed at `tempo-mono.observability.svc.cluster.local:3100` per DD-21/DD-30. The lgtm-distributed Tempo sub-chart is disabled — `tempo-mono` is the sole backend.
+
+Useful queries:
+
+```traceql
+# All spans from the kagent controller — sees Agent reconciliations
+{ resource.service.name = "kagent" }
+
+# Agent reconciliation events specifically
+{ name =~ "create_agent.*" }
+
+# Chat sessions (one trace per user turn)
+{ name = "chat" }
+
+# autogen LLM calls — cost lives here
+{ span.gen_ai.system = "autogen" }
+# Drill into a span for `gen_ai.usage.totalCost`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`
+
+# A2A messages from planner to analyst
+{ span.messaging.destination = "analyst" }
+
+# Per-agent narrowing (k8sattributes processor adds these)
+{ resource.k8s.namespace.name = "agent-housing-demo" }
+```
+
+OTel collector pipeline (per DD-24/v1.6):
+
+```
+autogen runtime → OTel SDK → opentelemetry-collector
+   ├── otlp/tempo       → tempo-mono              (TraceQL)
+   └── otlphttp/langfuse → Langfuse Cloud (US)    (LLM-ops UX)
+```
+
+### Loki — `loki` datasource
+
+Pod logs. Useful filters:
+
+```logql
+# Sandbox logs — Python execution stdout/stderr
+{namespace=~"agent-.+", app="sandbox"}
+
+# Chat-frontend Next.js logs — pino JSON
+{namespace=~"agent-.+", app="chat-frontend"} | json
+
+# kagent controller events
+{namespace="kagent-system"} |= "reconcile"
+
+# Budget-controller poll loop
+{namespace="whisperops-system", app="budget-controller"}
+```
+
+### Mimir/Prometheus — `prom` datasource
+
+`whisperops_*` metrics emitted by the budget-controller (DD-28) and `sandbox_*` metrics from the per-agent sandbox `/metrics` endpoint:
+
+```promql
+# Per-agent current spend (60s polling)
+whisperops_agent_spend_usd{agent="agent-housing-demo"}
+
+# Budget-burn alert source — counts of 80% / 100% events
+whisperops_budget_80pct_total
+whisperops_budget_100pct_total
+
+# Sandbox internals
+sandbox_executions_total
+sandbox_oom_total
+sandbox_timeout_total
+rate(sandbox_execution_duration_seconds_sum[5m]) / rate(sandbox_execution_duration_seconds_count[5m])
+```
+
+### Langfuse Cloud — external UI
+
+```
+https://us.cloud.langfuse.com/
+```
+
+Login with the project credentials embedded in `secrets/langfuse.enc.yaml`. Same trace data as Tempo, but with LLM-ops UX:
+
+- **Per-agent cost rollup** — projects + sessions filterable by `metadata.agent.id`
+- **Prompt + response visible in browser** — clickable, syntax-highlighted, with token counts
+- **Score annotation** — manual or evaluator-driven scoring on individual generations
+- **Dataset eval** — replay a saved input set against a new prompt version
+
+Direct deeplink for a single trace (when you have a trace ID from Tempo):
+
+```
+https://us.cloud.langfuse.com/project/<projectId>/traces/<traceId>
+```
+
+The `<projectId>` is fixed per Langfuse project; `<traceId>` is the same UUID you see as `trace_id` in Tempo (single OTel TraceContext propagated through both backends). Open a Tempo trace, copy the trace ID, paste into the Langfuse URL — same data, two perspectives.
+
+### Grafana Infinity datasource (`langfuse`) — Langfuse REST from Grafana
+
+Provisioned by `platform/observability/grafana-langfuse-datasource.yaml` (DD-24, v1.6). Lets you build Grafana panels off Langfuse REST endpoints using `${LANGFUSE_BASIC_AUTH}` env-var substitution.
+
+Example panel — top 10 traces by cost:
+
+```
+URL:    ${LANGFUSE_HOST}/api/public/traces?limit=10&orderBy=cost
+Format: JSON
+Root:   data
+Columns: id, name, totalCost, latency, userId
+```
+
+The same data is what the budget-controller polls every 60s on the `langfuse` poll target.
+
+### Budget-controller flow (DD-28)
+
+1. Every 60s, the controller calls `GET ${LANGFUSE_HOST}/api/public/observations?fromTimestamp=<window>` (or `Mimir whisperops_agent_spend_usd` if `pollTarget: mimir`)
+2. Aggregates `usage.totalCost` per agent (`metadata.agent.id` tag)
+3. Patches the Kubernetes annotation `whisperops.io/spend-usd` on each `agent-*` namespace
+4. Emits Prometheus metrics: `whisperops_agent_spend_usd`, `whisperops_budget_80pct_total`, `whisperops_budget_100pct_total`
+5. Kyverno `ClusterPolicy` (audit mode in v0.3, enforce in v0.4) blocks new chat sessions when `spend-usd >= budget-usd`
+
+To inspect:
+
+```bash
+kubectl get ns agent-housing-demo -o jsonpath='{.metadata.annotations}'
+kubectl logs -n whisperops-system deploy/budget-controller -f
+```
+
+---
+
+## Cross-references
+
+- DESIGN decisions (DD-1 through DD-31) — `.claude/sdd/features/DESIGN_whisperops.md` (gitignored, internal)
+- Acceptance tests — `.claude/sdd/features/DEFINE_whisperops.md` (gitignored, internal)
+- Architecture deep-dive — `docs/ARCHITECTURE.md`
+- Security model — `docs/SECURITY.md`
+- Open items + future phases — DESIGN §15 + `docs/NEXT_STEPS.md`
+- Smoke tests — `tests/smoke/{platform-up,agent-creation,query-roundtrip}.sh`

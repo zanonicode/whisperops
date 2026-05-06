@@ -1,3 +1,6 @@
+> **Current open items live in `.claude/sdd/features/DESIGN_whisperops.md` §15** (DESIGN v1.7, post-live-deploy). Most phases below are now closed (Phase 0–4 resolved per DESIGN Reality Reconciliation Appendix §D).
+> The content below is preserved for historical context as the original phased roadmap.
+
 # Next Steps — Path to a Fully Working Dataset Whisperer
 
 > Roadmap from current state (platform layer up, agent CRs scaffolded, no agent runtime behavior yet) to the **fully working product as scoped in `.claude/sdd/features/DEFINE_whisperops.md`**: an operator fills a 4-field Backstage form, gets a per-agent chat UI in ~5 minutes, asks "What's the median house price in California by latitude?", and gets a real numerical answer with a chart link, all observable in Grafana and Langfuse, with budget enforcement and policy guardrails active.
