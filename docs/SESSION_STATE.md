@@ -1,8 +1,8 @@
-# Session State — 2026-05-06 (late evening update)
+# Session State — 2026-05-06 (overnight update)
 
-Live state of the whisperops deploy after the 2026-05-06 sessions (platform-bring-up + Phase 2 sandbox MCP + Phase 3 demo-routing). Supersedes the earlier 2026-05-06 version of this file.
+Live state after Phase 2 (sandbox MCP), the proper Phase 3 (custom per-agent chat-frontend), and Phase 4-traces (OTel Collector → Tempo end-to-end). Supersedes earlier 2026-05-06 versions of this file.
 
-> **One-paragraph TL;DR.** The platform layer is fully deployed, the per-agent stack provisions real GCP resources end-to-end, the **sandbox MCP server is built, sideloaded, and live** in the cluster, and kagent's ToolServer **discovered the `execute_python` tool**. The **`analyst` Agent is now `Accepted=True`** (along with planner + writer). The per-agent chat URL routes to kagent's built-in UI via an ExternalName Service. Smoke-test for first end-to-end query is a browser interaction at this point, not more infra.
+> **One-paragraph TL;DR.** Backstage scaffolds → real GCP resources are provisioned → sandbox MCP server is live and `execute_python` is discovered by kagent → `planner`/`writer`/`analyst` Agents all `Accepted=True` → **a custom per-agent chat-frontend** (Next.js + SSE) talks directly to kagent's session API and returns answers from the planner agent → **distributed traces** flow from chat-frontend (Node OTel) and sandbox (Python OTel) through the OTel Collector to Tempo, queryable in Grafana with per-agent labels (`agent.id`, `agent.role`) attached by the k8sattributes processor. The DESIGN-time end-to-end story is alive in the cluster as of session-end.
 
 ---
 
@@ -92,6 +92,15 @@ ArgoCD app `agent-housing-demo` is **Healthy**. All resources in the namespace:
 
 ## What's working end-to-end (closed today)
 
+### 0. Per-agent chat-frontend → kagent session API (Phase 3 — **DONE for real, not the kagent-UI shortcut**)
+
+DESIGN intent restored: `Backstage form → scaffold → URL próprio do agente → user chats → planner answers`. No kagent UI in the user path.
+
+- `src/chat-frontend/app/api/chat/route.ts` rewrite: `GET /api/agents/{ns}/{name}` (cached) → `POST /api/sessions` (cookie-stickied per browser) → `POST /api/sessions/{id}/invoke` with `{task, team_config}` → SSE chunk back to browser. The contract was reverse-engineered from the kagent v0.4.3 Go source.
+- Image `whisperops/chat-frontend:0.1.1` (104 MB), built on the VM, sideloaded via `docker save | docker exec ... ctr import` (kind v0.25 `kind load` is broken against idpbuilder).
+- `chat-frontend.yaml.njk` skeleton: real `Deployment + Service` (port 3000), env-driven scoping (`KAGENT_BASE_URL` + `AGENT_NAMESPACE` + `AGENT_NAME` + `USER_ID`).
+- Verified: `curl chat-frontend-housing-demo:3000/api/chat -d '{"message":"…"}'` returns the planner's reply as SSE.
+
 ### 1. Sandbox MCP server (Phase 2 — **DONE**)
 
 `src/sandbox/app/mcp_server.py` wraps the existing FastAPI sandbox in an MCP layer using the official `mcp==1.27.0` Python SDK. Tool surface deliberately minimized to `execute_python(code: str) -> str` — pre-loads pandas + numpy + the california-housing CSV (baked into the image) as `df`. Mounted on the same uvicorn process at `/mcp`.
@@ -107,7 +116,26 @@ DESIGN intended a custom Next.js chat-frontend per agent. The skeleton's existin
 
 Result: opening the per-agent URL lands the user in kagent's built-in chat UI, where they pick `agent-housing-demo/planner` from the dropdown and chat. Trade-off: the UI shows all agents in the cluster instead of being agent-scoped — acceptable for a first demo, replaced later by a purpose-built UI (NEXT_STEPS Phase 3.full).
 
-### 3. Image pipeline (sideload-only, Phase 1 — **DONE for demo**)
+### 3. Distributed tracing (Phase 4-traces — **DONE**)
+
+OTel pipeline live: chat-frontend (Node SDK) and sandbox (Python SDK) both ship spans to the in-cluster OTel Collector, which forwards to Tempo. Grafana has Tempo + Loki + Mimir datasources auto-provisioned by the lgtm-distributed chart.
+
+Configuration committed:
+- `platform/observability/otel-collector-values.yaml` — receivers (otlp 4317/4318), processors (`k8sattributes` extracts `whisperops.io/agent` and `whisperops.io/role` pod labels into resource attributes; `batch`; `resource` for environment tag), exporters (`otlphttp/tempo` + `debug`).
+- `platform/observability/lgtm-values.yaml` — enables `tempo.traces.otlp.{grpc,http}.enabled`; sets `tempo.ingester.config.replication_factor: 1` (single-node kind needs RF=1, default is 3); removes pod anti-affinity / topology spread on every Tempo component (single-node can't satisfy them).
+- `platform/observability/otel-collector-alias-svc.yaml` — `Service/otel-collector` aliasing the chart's `opentelemetry-collector` Service so existing skeleton code resolving `otel-collector.observability:4317` works without forking the chart.
+
+Sandbox NetworkPolicy egress widened to allow 4317/4318 toward `observability` namespace (default-deny was blocking telemetry export).
+
+Custom spans currently emitted:
+- `chat.handle` (chat-frontend) — wraps the request handler; carries `agent.id`, `agent.ref`, `message.length`.
+- `kagent.invoke` (chat-frontend) — child span around the kagent `/invoke` call; carries `agent.role`, `kagent.session_id`, `user.id`, `reply.length`.
+- `sandbox.mcp.execute_python` (sandbox) — wraps the subprocess execution; carries `dataset.path`, `code.length`, `execution.exit_code`.
+- All FastAPI/Next.js auto-instrumentation spans on top.
+
+Verified end-to-end: a single chat message produces traces queryable as `service.name=chat-frontend` and `service.name=sandbox` in Tempo's `/api/search` endpoint.
+
+### 4. Image pipeline (sideload-only, Phase 1 — **DONE for demo**)
 
 The clean registry path (Gitea container registry + containerd mirror) is still future work. **For demo purposes**, the sandbox image is built on the VM with `docker build -f src/sandbox/Dockerfile -t whisperops/sandbox:0.1.3 .` and sideloaded into kind via `docker save | docker exec localdev-control-plane ctr -n=k8s.io images import -`. `kind load docker-image` v0.25 fails against this idpbuilder cluster with "failed to detect containerd snapshotter" — the manual `ctr import` path is the workaround.
 
@@ -115,36 +143,61 @@ This means **a fresh kind cluster will not have the sandbox image**; the build/s
 
 ---
 
-## What's NOT working yet
+## What's NOT working yet (smaller list now)
 
-### 1. End-to-end chat smoke test (browser-only at this point)
+### 1. Streaming reply
 
-The agent runtime is verifiably wired: kagent reaches the sandbox, ToolServer discovery succeeds, Agents accept their tool refs. However the human "type a question, see an answer" loop hasn't been exercised this session — direct curl invocation of `/api/sessions/{id}/invoke` returns 422 from kagent's autogen app, which means the request body shape needs to match exactly what the kagent UI sends. Easiest test: **port-forward kagent UI and use the browser** (instructions below).
+The chat-frontend uses kagent's synchronous `/invoke` and emits a single SSE chunk with the full reply. Token-by-token streaming (kagent's `/invoke/stream` endpoint) is a UX polish item, not a blocker.
 
-### 2. Per-agent UI scoping
+### 2. Container registry
 
-Today, the kagent UI shows every agent in the cluster. The "operator scaffolds an agent → user gets a private chat at that URL" promise is partially delivered (the URL works) and partially not (the UI isn't agent-scoped). Phase 3.full in NEXT_STEPS.
+Sandbox + chat-frontend images live only in the kind node's containerd via manual sideload. Reproducible on a fresh cluster requires rebuild + sideload. Phase 1-full in NEXT_STEPS.
 
-### 3. Container registry
+### 3. Logs + Metrics pipelines
 
-Image lives only in the kind node's containerd, sideloaded. Reproducible on a fresh cluster requires manual rebuild + sideload. Phase 1 in NEXT_STEPS.
+Only traces are wired through OTel Collector → backend today. Loki (logs) and Mimir/Prometheus (metrics) datasources exist in Grafana but the OTel Collector pipeline doesn't forward to them yet. Future work.
+
+### 4. Langfuse Cloud
+
+DESIGN §13 specified Langfuse Cloud for LLM-specific observability (per-token cost, per-prompt drift). Not wired — needs Langfuse account + secrets. Future work.
+
+### 5. Per-agent budget controller
+
+DESIGN §10 specified a Python budget-controller that reads kagent invocation costs and enforces per-agent budgets. Not implemented. Future work.
 
 ---
 
 ## Smoke-test the chat (manual, browser)
 
 ```bash
-# 1) Port-forward the kagent UI
-gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 8888:localhost:8888 &
-gcloud compute ssh whisperops-vm --zone=us-central1-a --command='
-  sudo kubectl --kubeconfig=/root/.kube/config -n kagent-system port-forward --address=0.0.0.0 svc/kagent 8888:80
-' &
+# Port-forward the per-agent chat-frontend (the real Phase 3 implementation)
+gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 3000:localhost:3000 \
+  sudo kubectl --kubeconfig=/root/.kube/config -n agent-housing-demo port-forward \
+  --address=0.0.0.0 svc/chat-frontend-housing-demo 3000:3000
 
-# 2) In a browser: http://localhost:8888
-# 3) Pick agent-housing-demo/planner from the dropdown
-# 4) Ask: "What is the median house price in California?"
-# 5) Watch kagent dispatch to planner → analyst (which calls sandbox.execute_python) → writer
-# 6) Verify in `kubectl logs -n sandbox -l app.kubernetes.io/name=sandbox` that the MCP tool was invoked
+# In a browser: http://localhost:3000
+# Type: "What is the median house price in California?"
+# See: planner agent's JSON plan stream back as SSE
+```
+
+## Smoke-test the trace (manual, browser)
+
+```bash
+# Port-forward Grafana
+gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 3333:localhost:3333 \
+  sudo kubectl --kubeconfig=/root/.kube/config -n observability port-forward \
+  --address=0.0.0.0 svc/lgtm-distributed-grafana 3333:80
+
+# Get admin password
+gcloud compute ssh whisperops-vm --zone=us-central1-a --command='
+  sudo kubectl --kubeconfig=/root/.kube/config -n observability get secret \
+  lgtm-distributed-grafana -o jsonpath="{.data.admin-password}" | base64 -d; echo'
+
+# In a browser: http://localhost:3333
+# Login (admin / <password>), Explore → Tempo → Search:
+#   tags:    service.name=chat-frontend
+#   limit:   20
+# Click any trace → see chat.handle → kagent.invoke
 ```
 
 ---
