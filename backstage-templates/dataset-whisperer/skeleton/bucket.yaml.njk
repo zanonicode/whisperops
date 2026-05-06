@@ -9,6 +9,7 @@ spec:
   forProvider:
     location: ${{ values.region | default('US-CENTRAL1') }}
     publicAccessPrevention: enforced
+    uniformBucketLevelAccess: true
     versioning:
       - enabled: true
     labels:

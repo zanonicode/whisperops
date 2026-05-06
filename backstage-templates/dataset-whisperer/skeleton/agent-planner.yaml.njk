@@ -1,22 +1,20 @@
-apiVersion: kagent.dev/v1
+apiVersion: kagent.dev/v1alpha1
 kind: Agent
 metadata:
   name: planner
   namespace: agent-${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
-    whisperops.io/budget-usd: "${{ values.budget_usd | default('5.00') }}"
+    whisperops.io/budget-usd: "${{ values.budget_usd }}"
     whisperops.io/role: planner
+    whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
-  model:
-    provider: anthropic
-    modelId: claude-haiku-4-5-20251001
-  systemPromptConfigMapRef:
-    name: prompt-planner
-    namespace: whisperops-system
-  observability:
-    otlpEndpoint: http://otel-collector.observability:4317
-    tags:
-      - agent-${{ values.agent_name }}
-      - dataset:${{ values.dataset_id }}
-      - role:planner
+  description: "Dataset Whisperer planner — decomposes user questions into analyst/writer subtasks. Cheap, fast, no tools."
+  modelConfig: model-planner
+  systemMessage: |
+    You are the planner for the Dataset Whisperer agent ${{ values.agent_name }}.
+    Given a user question about the dataset ${{ values.dataset_id }}, output a
+    short JSON plan with two keys:
+      analyst_query: the precise computation the analyst should run, or null
+      writer_brief: the prose summary the writer should produce, or null
+    Keep plans tight. Never answer the user directly.

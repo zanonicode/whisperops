@@ -1,26 +1,27 @@
-apiVersion: kagent.dev/v1
+apiVersion: kagent.dev/v1alpha1
 kind: Agent
 metadata:
   name: analyst
   namespace: agent-${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
-    whisperops.io/budget-usd: "${{ values.budget_usd | default('5.00') }}"
+    whisperops.io/budget-usd: "${{ values.budget_usd }}"
     whisperops.io/role: analyst
+    whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
-  model:
-    provider: anthropic
-    modelId: ${{ values.primary_model }}
-  systemPromptConfigMapRef:
-    name: prompt-analyst
-    namespace: whisperops-system
+  description: "Dataset Whisperer analyst — runs Python in the sandbox to compute aggregates and answer numerical questions about ${{ values.dataset_id }}."
+  modelConfig: model-primary
+  systemMessage: |
+    You are the analyst for the Dataset Whisperer agent ${{ values.agent_name }}.
+    You answer numerical questions about the dataset ${{ values.dataset_id }} by
+    writing and executing short Python snippets in the sandbox tool. Always:
+      - inspect the dataset shape before computing
+      - prefer pandas for tabular work
+      - return concise answers with units, plus a one-line method note
+    If the user asks for a chart, produce a matplotlib PNG and return the bucket path.
   tools:
-    - name: sandbox.execute_python
-      toolServer: sandbox
-      toolServerNamespace: sandbox
-  observability:
-    otlpEndpoint: http://otel-collector.observability:4317
-    tags:
-      - agent-${{ values.agent_name }}
-      - dataset:${{ values.dataset_id }}
-      - role:analyst
+    - type: McpServer
+      mcpServer:
+        toolServer: sandbox
+        toolNames:
+          - execute_python

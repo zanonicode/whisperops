@@ -1,6 +1,4 @@
 repositories:
-  - name: kagent
-    url: https://charts.kagent.dev
   - name: grafana
     url: https://grafana.github.io/helm-charts
   - name: open-telemetry
@@ -51,7 +49,7 @@ releases:
   - name: kagent
     namespace: kagent-system
     createNamespace: true
-    chart: kagent/kagent
+    chart: oci://ghcr.io/kagent-dev/kagent/helm/kagent
     version: "0.4.3"
 
   - name: argocd-root-app

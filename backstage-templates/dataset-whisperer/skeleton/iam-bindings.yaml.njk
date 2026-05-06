@@ -7,6 +7,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   forProvider:
+    project: ${{ values.project_id }}
     role: roles/storage.objectViewer
     member: serviceAccount:agent-${{ values.agent_name }}@${{ values.project_id }}.iam.gserviceaccount.com
     condition:
@@ -25,6 +26,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   forProvider:
+    project: ${{ values.project_id }}
     role: roles/storage.objectAdmin
     member: serviceAccount:agent-${{ values.agent_name }}@${{ values.project_id }}.iam.gserviceaccount.com
     condition:

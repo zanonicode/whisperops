@@ -1,4 +1,4 @@
-apiVersion: kagent.dev/v1
+apiVersion: kagent.dev/v1alpha1
 kind: ToolServer
 metadata:
   name: sandbox
@@ -7,6 +7,6 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   description: "Sandboxed Python code execution service for Dataset Whisperer"
-  transport:
-    httpsse:
-      url: http://sandbox.sandbox.svc.cluster.local:8080
+  config:
+    streamableHttp:
+      url: http://sandbox.sandbox.svc.cluster.local:8080/mcp

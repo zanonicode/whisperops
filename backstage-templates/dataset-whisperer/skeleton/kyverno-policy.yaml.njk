@@ -19,10 +19,7 @@ spec:
               kinds:
                 - NetworkPolicy
       validate:
-        message: "Egress policies in this namespace must not expand beyond the approved set."
-        deny:
-          conditions:
-            any:
-              - key: "{{ `{{request.object.metadata.name}}` }}"
-                operator: NotEquals
-                value: "default-egress"
+        message: "Egress NetworkPolicies in this namespace must be named 'default-egress'."
+        pattern:
+          metadata:
+            name: default-egress

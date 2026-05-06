@@ -1,0 +1,15 @@
+apiVersion: kagent.dev/v1alpha1
+kind: ModelConfig
+metadata:
+  name: model-planner
+  namespace: agent-${{ values.agent_name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  provider: Anthropic
+  model: claude-haiku-4-5-20251001
+  apiKeySecretRef: anthropic-api-key
+  apiKeySecretKey: api-key
+  anthropic:
+    maxTokens: 2048
+    temperature: "0.1"

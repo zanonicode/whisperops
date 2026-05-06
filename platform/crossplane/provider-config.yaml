@@ -5,7 +5,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "4"
 spec:
-  projectID: ""
+  projectID: whisperops
   credentials:
     source: Secret
     secretRef:
