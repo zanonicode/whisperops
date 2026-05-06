@@ -1,3 +1,4 @@
+{{- $arPrefix := printf "%s-docker.pkg.dev/%s/%s" .Values.imageRegistry.region .Values.imageRegistry.projectId .Values.imageRegistry.repositoryName }}
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
@@ -8,9 +9,10 @@ metadata:
     policies.kyverno.io/severity: high
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
-      Only images from the platform Gitea registry and approved upstream
-      registries are allowed. This prevents supply-chain attacks via
-      untrusted image sources.
+      Only images from the platform Artifact Registry (DD-14) and approved
+      upstream registries are allowed. Gitea container registry is not in
+      the allowlist. This prevents supply-chain attacks via untrusted image
+      sources.
 spec:
   validationFailureAction: Enforce
   background: true
@@ -29,10 +31,11 @@ spec:
                       - "^agent-.*"
       validate:
         message: >-
-          Images must come from the platform Gitea registry (gitea.local/)
-          or approved upstream registries (ghcr.io, registry.k8s.io, quay.io,
-          gcr.io, docker.io/library).
+          Images must come from the platform Artifact Registry
+          ({{ $arPrefix }}/*) or approved upstream registries
+          (gcr.io/distroless/, ghcr.io/argoproj/, registry.k8s.io/,
+          docker.io/library/python, quay.io/jetstack/).
         pattern:
           spec:
             containers:
-              - image: "gitea.local/* | ghcr.io/* | registry.k8s.io/* | quay.io/* | gcr.io/* | docker.io/library/*"
+              - image: "{{ $arPrefix }}/* | gcr.io/distroless/* | ghcr.io/argoproj/* | registry.k8s.io/* | docker.io/library/* | quay.io/jetstack/*"

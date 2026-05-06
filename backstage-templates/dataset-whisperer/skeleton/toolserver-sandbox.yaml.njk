@@ -9,4 +9,4 @@ spec:
   description: "Sandboxed Python code execution service for Dataset Whisperer"
   config:
     streamableHttp:
-      url: http://sandbox.sandbox.svc.cluster.local:8080/mcp
+      url: http://sandbox.agent-${{ values.agent_name }}.svc.cluster.local:8080/mcp

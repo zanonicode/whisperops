@@ -1,0 +1,61 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "datasource", "id": "tempo", "name": "Tempo", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "Agent query latency p50/p95/p99, A2A hop breakdown, error rates",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "title": "Query Latency p50/p95/p99",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(whisperops_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(whisperops_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "title": "A2A Hop Latency (Planner → Analyst → Writer)",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_a2a_hop_duration_seconds_bucket{hop='planner'}[5m])) by (le))", "legendFormat": "Planner p95" },
+        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_a2a_hop_duration_seconds_bucket{hop='analyst'}[5m])) by (le))", "legendFormat": "Analyst p95" },
+        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_a2a_hop_duration_seconds_bucket{hop='writer'}[5m])) by (le))", "legendFormat": "Writer p95" }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "lineWidth": 1 } } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "title": "Error Rate by Type",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum(rate(whisperops_query_errors_total[5m])) by (error_type) / sum(rate(whisperops_query_total[5m]))", "legendFormat": "{{error_type}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "tags": ["whisperops", "agents", "performance"],
+  "title": "Agent Performance",
+  "uid": "whisperops-agent-performance",
+  "version": 1
+}

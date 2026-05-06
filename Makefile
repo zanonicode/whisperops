@@ -1,8 +1,9 @@
 .DEFAULT_GOAL := help
 .PHONY: help preflight deploy destroy smoke-test upload-datasets regenerate-profiles decrypt-secrets lint \
-        tf-init tf-plan tf-apply platform-bootstrap
+        tf-init tf-plan tf-apply platform-bootstrap ar-pull-secret
 
-TERRAFORM_DIR := terraform/envs/demo
+TERRAFORM_DIR := terraform
+TF_ENV_DIR    := terraform/envs/demo
 SECRETS_DIR   := secrets
 DATASETS_DIR  := datasets
 
@@ -19,21 +20,21 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 		|| (echo "  ✗ gcloud not authenticated; run: gcloud auth application-default login" && exit 1)
 	@echo "  ✓ gcloud authenticated"
 	@# 2. tfvars has been customised
-	@! grep -q "YOUR_GCP_PROJECT_ID" $(TERRAFORM_DIR)/terraform.tfvars 2>/dev/null \
+	@! grep -q "YOUR_GCP_PROJECT_ID" $(TF_ENV_DIR)/terraform.tfvars 2>/dev/null \
 		|| (echo "  ✗ terraform/envs/demo/terraform.tfvars still has placeholder project_id" && exit 1)
 	@echo "  ✓ terraform.tfvars customised"
-	@! grep -q "YOUR_GCP_PROJECT_ID" $(TERRAFORM_DIR)/backend.tfvars 2>/dev/null \
+	@! grep -q "YOUR_GCP_PROJECT_ID" $(TF_ENV_DIR)/backend.tfvars 2>/dev/null \
 		|| (echo "  ✗ terraform/envs/demo/backend.tfvars still has placeholder bucket name" && exit 1)
 	@echo "  ✓ backend.tfvars customised"
 	@# 3. Active project APIs
-	@PROJECT=$$(grep -E '^project_id' $(TERRAFORM_DIR)/terraform.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
+	@PROJECT=$$(grep -E '^project_id' $(TF_ENV_DIR)/terraform.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
 	for api in compute.googleapis.com storage.googleapis.com iam.googleapis.com iamcredentials.googleapis.com; do \
 		gcloud services list --enabled --project="$$PROJECT" --filter="config.name=$$api" --format="value(name)" 2>/dev/null | grep -q . \
 			|| (echo "  ✗ API not enabled on $$PROJECT: $$api" && exit 1); \
 	done; \
 	echo "  ✓ Required APIs enabled on project $$PROJECT"
 	@# 4. tfstate bucket exists
-	@BUCKET=$$(grep -E '^bucket' $(TERRAFORM_DIR)/backend.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
+	@BUCKET=$$(grep -E '^bucket' $(TF_ENV_DIR)/backend.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
 	gcloud storage buckets describe "gs://$$BUCKET" --format=none 2>/dev/null \
 		|| (echo "  ✗ tfstate bucket gs://$$BUCKET not found — pre-create it manually" && exit 1); \
 	echo "  ✓ tfstate bucket gs://$$BUCKET exists"
@@ -62,22 +63,43 @@ deploy: preflight tf-apply platform-bootstrap ## Full deploy: pre-flight → Ter
 	@echo "✓ Deploy complete. Run 'make smoke-test' to verify."
 
 tf-init: ## Initialise Terraform backend
-	terraform -chdir=$(TERRAFORM_DIR) init -backend-config=backend.tfvars
+	terraform -chdir=$(TERRAFORM_DIR) init -backend-config=envs/demo/backend.tfvars
 
 tf-plan: tf-init ## Show Terraform plan
-	terraform -chdir=$(TERRAFORM_DIR) plan -var-file=terraform.tfvars
+	terraform -chdir=$(TERRAFORM_DIR) plan -var-file=envs/demo/terraform.tfvars
 
 tf-apply: tf-init ## Apply Terraform (provisions VM, buckets, IAM)
-	terraform -chdir=$(TERRAFORM_DIR) apply -var-file=terraform.tfvars -auto-approve
+	terraform -chdir=$(TERRAFORM_DIR) apply -var-file=envs/demo/terraform.tfvars -auto-approve
 
 destroy: ## Tear down all GCP resources
-	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=terraform.tfvars -auto-approve
+	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=envs/demo/terraform.tfvars -auto-approve
 
 # ── Platform bootstrap ─────────────────────────────────────────────────────────
 
 platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profiles → Supabase)
 	kubectl apply -f platform/helm/platform-bootstrap-job/templates/
 	kubectl wait --for=condition=complete job/platform-bootstrap --timeout=300s -n platform
+
+# ── Artifact Registry pull secret (DD-14) ──────────────────────────────────────
+# Run this after `terraform apply` and before deploying agent workloads.
+# Re-run whenever the access token is about to expire (every 60 minutes).
+# Usage: make ar-pull-secret PROJECT_ID=<your-project> REGION=us-central1
+REGION ?= us-central1
+
+ar-pull-secret: ## Create/refresh Artifact Registry imagePullSecret in all agent namespaces
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID is not set. Usage: make ar-pull-secret PROJECT_ID=<id>"; exit 1)
+	@REGISTRY="$(REGION)-docker.pkg.dev"; \
+	TOKEN=$$(gcloud auth print-access-token); \
+	for NS in $$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep '^agent-'); do \
+		kubectl create secret docker-registry ar-pull-secret \
+			--namespace=$$NS \
+			--docker-server=$$REGISTRY \
+			--docker-username=oauth2accesstoken \
+			--docker-password=$$TOKEN \
+			--dry-run=client -o yaml | kubectl apply -f -; \
+		echo "  ✓ imagePullSecret refreshed in $$NS"; \
+	done
+	@echo "Token expires in ~60 minutes. Re-run 'make ar-pull-secret' to refresh."
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
 
@@ -110,7 +132,6 @@ lint-python: ## Lint Python (ruff + mypy)
 
 lint-ts: ## Lint TypeScript (tsc + eslint)
 	cd src/chat-frontend && tsc --noEmit
-	cd backstage-templates/dataset-whisperer/actions && tsc --noEmit
 
 lint-helm: ## Lint Helm charts
 	@for chart in platform/helm/*/; do \

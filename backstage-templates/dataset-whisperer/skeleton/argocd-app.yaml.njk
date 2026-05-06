@@ -11,11 +11,15 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: http://gitea.gitea.svc.cluster.local/whisperops/agents.git
+    # CNOE-vendored Gitea uses giteaAdmin as the owner of repos created by
+    # the scaffolder (publish:gitea action). Each agent gets its own repo
+    # at giteaAdmin/agent-{name}; manifests live at the repo root.
+    repoURL: https://gitea.gitea.svc.cluster.local:3000/giteaAdmin/agent-${{ values.agent_name }}.git
     targetRevision: HEAD
-    path: ${{ values.agent_name }}
+    path: .
     directory:
       recurse: true
+      exclude: '{catalog-info.yaml,argocd-app.yaml,README.md}'
   destination:
     server: https://kubernetes.default.svc
     namespace: agent-${{ values.agent_name }}

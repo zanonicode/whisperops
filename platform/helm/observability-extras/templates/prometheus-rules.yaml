@@ -1,3 +1,4 @@
+{{- if .Values.prometheusOperator.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -59,3 +60,4 @@ spec:
           annotations:
             summary: "Agent budget exhausted"
             description: "Agent has consumed its full budget; replicas will be scaled to 0"
+{{- end }}

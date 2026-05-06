@@ -28,3 +28,16 @@ tempo:
   compactor:
     affinity: {}
     topologySpreadConstraints: []
+
+# Enable the grafana sidecar to auto-load ConfigMaps labeled
+# grafana_dashboard=1 (whisperops-dashboards ConfigMap from
+# observability-extras chart).
+grafana:
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      folder: /tmp/dashboards
+      provider:
+        foldersFromFilesStructure: true

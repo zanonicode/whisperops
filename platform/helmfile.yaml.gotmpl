@@ -1,3 +1,12 @@
+# Application-platform-layer charts (kagent + Crossplane + Kyverno + LGTM
+# + OTel Collector). Installed AFTER the IDP layer (idpbuilder/CNOE) is up.
+#
+# DESIGN-time intent had a final `argocd-root-app` Helm release that would
+# install argo/argo-cd into the argocd namespace; that's been DROPPED — the
+# CNOE ref-implementation already installs ArgoCD there, and re-installing
+# collides on existing resources. See DESIGN v1.2 Reality Reconciliation §A.
+# The "root app" pattern is implemented as a single Application CR pointing
+# at platform/argocd/applications/, applied separately (file 26).
 repositories:
   - name: grafana
     url: https://grafana.github.io/helm-charts
@@ -7,8 +16,6 @@ repositories:
     url: https://kyverno.github.io/kyverno
   - name: crossplane-stable
     url: https://charts.crossplane.io/stable
-  - name: argo
-    url: https://argoproj.github.io/argo-helm
 
 releases:
   - name: crossplane
@@ -29,14 +36,7 @@ releases:
     chart: grafana/lgtm-distributed
     version: "2.1.0"
     values:
-      - grafana:
-          enabled: true
-        loki:
-          enabled: true
-        tempo:
-          enabled: true
-        mimir:
-          enabled: true
+      - /tmp/whisperops/platform/observability/lgtm-values.yaml
 
   - name: opentelemetry-collector
     namespace: observability
@@ -45,19 +45,17 @@ releases:
     version: "0.104.0"
     needs:
       - observability/lgtm-distributed
+    values:
+      - /tmp/whisperops/platform/observability/otel-collector-values.yaml
 
   - name: kagent
     namespace: kagent-system
     createNamespace: true
     chart: oci://ghcr.io/kagent-dev/kagent/helm/kagent
     version: "0.4.3"
-
-  - name: argocd-root-app
-    namespace: argocd
-    createNamespace: false
-    chart: argo/argo-cd
-    version: "7.6.5"
-    needs:
-      - crossplane-system/crossplane
-      - kyverno/kyverno
-      - kagent-system/kagent
+    # DD-20: declarative ANTHROPIC_API_KEY env var on `app` container.
+    # The Secret `anthropic-api-key` (key `api-key`) must exist in the
+    # kagent-system namespace BEFORE this release reconciles — bootstrap
+    # populates it from SOPS-decrypted secrets/anthropic.enc.yaml.
+    values:
+      - /tmp/whisperops/platform/values/kagent-values.yaml

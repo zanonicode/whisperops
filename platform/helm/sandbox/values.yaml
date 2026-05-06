@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: gitea.local/whisperops/sandbox
+  repository: us-central1-docker.pkg.dev/REPLACE_PROJECT_ID/whisperops-images/sandbox
   pullPolicy: IfNotPresent
   tag: "latest"
 

@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: gitea.local/whisperops/chat-frontend
+  repository: us-central1-docker.pkg.dev/REPLACE_PROJECT_ID/whisperops-images/chat-frontend
   pullPolicy: IfNotPresent
   tag: "latest"
 

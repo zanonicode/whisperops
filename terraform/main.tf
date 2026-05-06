@@ -86,50 +86,67 @@ module "bootstrap_sa" {
   project_id    = var.project_id
   names         = ["whisperops-bootstrap"]
   display_name  = "WhisperOps Bootstrap SA"
-  description   = "Narrowly-scoped SA used by the whisperops VM during IDP bootstrap. Restricted to agent-* buckets and SAs via IAM Conditions."
+  description   = "Bootstrap SA used by the whisperops VM. Per DD-19, no IAM Conditions on *.create paths (CEL evaluates resource.name as empty at create time, causing 403 on every Crossplane SA/Key/IAMMember create)."
   project_roles = []
 }
 
-# IAM bindings with CEL Conditions are kept inline because
-# terraform-google-modules/iam/google does not support `condition` blocks.
+# DD-19: Bootstrap SA roles are granted unconditionally. CEL Conditions on
+# resource.name only meaningfully filter get/update/delete; they evaluate to
+# false on every *.create call (resource.name is empty at create time),
+# breaking Crossplane reconciliation. Residual blast-radius risk is accepted
+# and documented in DESIGN §13.
 
 resource "google_project_iam_member" "bootstrap_storage_admin" {
   project = var.project_id
   role    = "roles/storage.admin"
   member  = "serviceAccount:${module.bootstrap_sa.email}"
-
-  condition {
-    title       = "agent-buckets-only"
-    description = "Restrict storage admin to agent-prefixed buckets."
-    expression  = <<-EOT
-      resource.name.startsWith("projects/_/buckets/agent-") ||
-      resource.name.startsWith("projects/_/buckets/${var.project_id}-agent-")
-    EOT
-  }
 }
 
 resource "google_project_iam_member" "bootstrap_sa_admin" {
   project = var.project_id
   role    = "roles/iam.serviceAccountAdmin"
   member  = "serviceAccount:${module.bootstrap_sa.email}"
-
-  condition {
-    title       = "agent-service-accounts-only"
-    description = "Restrict service account admin to agent-prefixed service accounts."
-    expression  = "resource.name.startsWith(\"projects/${var.project_id}/serviceAccounts/agent-\")"
-  }
 }
 
 resource "google_project_iam_member" "bootstrap_sa_key_admin" {
   project = var.project_id
   role    = "roles/iam.serviceAccountKeyAdmin"
   member  = "serviceAccount:${module.bootstrap_sa.email}"
+}
 
-  condition {
-    title       = "agent-service-account-keys-only"
-    description = "Restrict service account key admin to agent-prefixed service accounts."
-    expression  = "resource.name.startsWith(\"projects/${var.project_id}/serviceAccounts/agent-\")"
-  }
+# DD-19: roles/resourcemanager.projectIamAdmin is required for the bootstrap
+# SA to write google_project_iam_member resources via Crossplane (the GCP IAM
+# provider issues ProjectIAMMember writes that need this role explicitly,
+# distinct from serviceAccountAdmin which only manages the SA objects).
+resource "google_project_iam_member" "bootstrap_project_iam_admin" {
+  project = var.project_id
+  role    = "roles/resourcemanager.projectIamAdmin"
+  member  = "serviceAccount:${module.bootstrap_sa.email}"
+}
+
+###############################################################################
+# Artifact Registry: whisperops-images repository (DD-14)
+###############################################################################
+
+module "artifact_registry" {
+  source = "./modules/artifact_registry"
+
+  project_id = var.project_id
+  region     = var.region
+  labels     = local.common_labels
+}
+
+# Grant the bootstrap SA write access to the AR repo so CI/CD and manual
+# image pushes can use it (also required for the VM startup script to push
+# images built on the VM itself).
+resource "google_artifact_registry_repository_iam_member" "bootstrap_sa_ar_writer" {
+  project    = var.project_id
+  location   = var.region
+  repository = "whisperops-images"
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${module.bootstrap_sa.email}"
+
+  depends_on = [module.artifact_registry]
 }
 
 ###############################################################################

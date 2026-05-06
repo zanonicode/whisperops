@@ -24,9 +24,11 @@ spec:
         whisperops.io/agent: agent-${{ values.agent_name }}
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ar-pull-secret
       containers:
         - name: chat-frontend
-          image: docker.io/whisperops/chat-frontend:0.1.0
+          image: us-central1-docker.pkg.dev/${{ values.project_id }}/whisperops-images/chat-frontend:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

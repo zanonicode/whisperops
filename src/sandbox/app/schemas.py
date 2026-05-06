@@ -1,17 +1,8 @@
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
 class ExecuteRequest(BaseModel):
     code: str = Field(description="Python code to execute in the sandbox")
-    dataset_id: Literal["california-housing", "online-retail-ii", "spotify-tracks"] = Field(
-        description="Dataset identifier — maps to a CSV file in the shared GCS bucket"
-    )
-    sa_key_b64: str = Field(description="Base64-encoded GCP service account JSON key")
-    agent_id: str = Field(description="Agent identifier for tracing and artifact isolation")
-    agent_bucket: str = Field(description="Per-agent GCS bucket name for artifact upload")
-    dataset_signed_url: str = Field(description="Signed URL to read the dataset CSV")
 
 
 class ExecuteResponse(BaseModel):

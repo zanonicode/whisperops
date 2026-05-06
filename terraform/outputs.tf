@@ -17,3 +17,8 @@ output "kubeconfig_path" {
   description = "Path to the kubeconfig written by the VM startup script."
   value       = "~/.kube/config"
 }
+
+output "registry_url" {
+  description = "Base URL for the whisperops-images Artifact Registry repository (DD-14)."
+  value       = module.artifact_registry.registry_url
+}

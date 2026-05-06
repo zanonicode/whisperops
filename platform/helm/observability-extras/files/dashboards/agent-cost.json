@@ -1,0 +1,63 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
+    { "type": "datasource", "id": "yesoreyeram-infinity-datasource", "name": "Infinity", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "Agent LLM cost tracking: total spend, top agents, per-query distribution, budget burn",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "currencyUSD" } },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Total LLM Spend (all agents)",
+      "type": "stat",
+      "targets": [{ "expr": "sum(whisperops_agent_spend_usd)", "legendFormat": "Total" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "percentunit", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.8 }, { "color": "red", "value": 1.0 }] } } },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "reduceOptions": { "calcs": ["max"] } },
+      "title": "Max Budget Burn Rate (any agent)",
+      "type": "stat",
+      "targets": [{ "expr": "max(whisperops_agent_spend_usd / whisperops_agent_budget_usd)", "legendFormat": "Max burn" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "id": 3,
+      "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "single" } },
+      "title": "Top 10 Most Expensive Agents",
+      "type": "barchart",
+      "targets": [{ "expr": "topk(10, sum by (agent_namespace) (whisperops_agent_spend_usd))", "legendFormat": "{{agent_namespace}}" }]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "custom": { "lineWidth": 1 } } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "id": 4,
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "title": "Budget Burn Over Time",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "sum by (agent_namespace) (whisperops_agent_spend_usd)", "legendFormat": "{{agent_namespace}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "tags": ["whisperops", "agents", "cost"],
+  "title": "Agent Cost",
+  "uid": "whisperops-agent-cost",
+  "version": 1
+}

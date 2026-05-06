@@ -1,0 +1,112 @@
+# Per-agent sandbox: a sidecar Pod scoped to this agent's identity.
+# Mounts the agent's GCP SA key (provisioned by Crossplane) so it can:
+#   - download its single configured dataset from gs://whisperops-datasets/
+#   - upload generated charts to its own bucket gs://agent-{name}/
+# The MCP tool surface is just `execute_python(code)` — dataset and bucket
+# come from env, not from LLM-supplied tool args.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox
+  namespace: agent-${{ values.agent_name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    app: sandbox
+    whisperops.io/agent: agent-${{ values.agent_name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox
+      whisperops.io/agent: agent-${{ values.agent_name }}
+  template:
+    metadata:
+      labels:
+        app: sandbox
+        whisperops.io/agent: agent-${{ values.agent_name }}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ar-pull-secret
+      containers:
+        - name: sandbox
+          image: us-central1-docker.pkg.dev/${{ values.project_id }}/whisperops-images/sandbox:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DATASET_ID
+              value: "${{ values.dataset_id }}"
+            - name: AGENT_BUCKET
+              value: "agent-${{ values.agent_name }}"
+            - name: DATASETS_BUCKET
+              value: "${{ values.project_id }}-datasets"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/var/run/gcp/credentials.json"
+            - name: EXECUTION_TIMEOUT_S
+              value: "60"
+          volumeMounts:
+            - name: gcp-creds
+              mountPath: /var/run/gcp
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1500m"
+              memory: "2Gi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: gcp-creds
+          secret:
+            # Crossplane ServiceAccountKey writes its connection-secret here
+            # (see service-account-key.yaml.njk: writeConnectionSecretToRef.name).
+            secretName: gcp-sa-key
+            items:
+              - key: private_key
+                path: credentials.json
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox
+  namespace: agent-${{ values.agent_name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  labels:
+    whisperops.io/agent: agent-${{ values.agent_name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: sandbox
+    whisperops.io/agent: agent-${{ values.agent_name }}
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http

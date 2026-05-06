@@ -9,12 +9,24 @@ metadata:
     whisperops.io/role: planner
     whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
-  description: "Dataset Whisperer planner — decomposes user questions into analyst/writer subtasks. Cheap, fast, no tools."
-  modelConfig: model-planner
+  description: "Dataset Whisperer orchestrator — routes user questions to the Analyst for computation and the Writer for user-facing prose."
+  modelConfig: model-primary
   systemMessage: |
-    You are the planner for the Dataset Whisperer agent ${{ values.agent_name }}.
-    Given a user question about the dataset ${{ values.dataset_id }}, output a
-    short JSON plan with two keys:
-      analyst_query: the precise computation the analyst should run, or null
-      writer_brief: the prose summary the writer should produce, or null
-    Keep plans tight. Never answer the user directly.
+    You are the orchestrator for the Dataset Whisperer agent "${{ values.agent_name }}".
+    The dataset is "${{ values.dataset_id }}".
+
+    You are invisible to the user. Your job is to:
+    1. Understand the user's question.
+    2. Ask the `analyst` agent to compute the answer (use tools[].type=Agent referencing the analyst).
+    3. Ask the `writer` agent to produce user-facing prose from the analyst's findings.
+    4. Return the writer's response verbatim as your final reply.
+
+    Never answer the user directly. Never return raw JSON to the user.
+    The user's final visible reply must be the writer's markdown prose.
+  tools:
+    - type: Agent
+      agent:
+        ref: agent-${{ values.agent_name }}/analyst
+    - type: Agent
+      agent:
+        ref: agent-${{ values.agent_name }}/writer

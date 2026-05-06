@@ -41,9 +41,9 @@ RUN find /usr/local/lib/python3.12/site-packages -name "pip*" -delete 2>/dev/nul
 
 COPY src/sandbox/app/ ./app/
 
-# Demo dataset baked into the image (1.4 MB). Replaced by per-agent
-# bucket-mounted CSV in a future revision; sufficient for MVP.
-COPY datasets/california-housing-prices.csv /app/datasets/california-housing-prices.csv
+# Datasets are NOT baked. Each per-agent sandbox downloads its single
+# configured dataset from gs://whisperops-datasets/{DATASET_ID}.csv at
+# first execute_python call, using the agent's mounted SA key.
 
 USER sandbox
 

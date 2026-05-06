@@ -4,9 +4,18 @@ on:
   push:
     branches: [main]
 
+# REGISTRY_URL is set from Terraform output `registry_url`.
+# Format: {region}-docker.pkg.dev/{project_id}/whisperops-images
+# Set REGISTRY_URL and GCP_PROJECT_ID as GitHub Actions variables in the repo settings.
+# For auth, configure Workload Identity Federation:
+#   - GitHub OIDC provider: https://token.actions.githubusercontent.com
+#   - Attribute mapping: google.sub → assertion.repository
+#   - Service account: whisperops-bootstrap@{project}.iam.gserviceaccount.com
+#   - Grant roles/artifactregistry.writer to the WIF principal.
+# Alternatively, store a bootstrap SA JSON key as GOOGLE_CREDENTIALS secret.
+
 env:
-  REGISTRY: ghcr.io
-  OWNER: ${{ github.repository_owner }}
+  REGISTRY_URL: ${{ vars.REGISTRY_URL }}
 
 jobs:
   detect-changes:
@@ -44,18 +53,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker $(echo "$REGISTRY_URL" | cut -d/ -f1) --quiet
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push sandbox
         uses: docker/build-push-action@v6
@@ -65,8 +75,8 @@ jobs:
           cache-from: type=gha,scope=sandbox
           cache-to: type=gha,mode=max,scope=sandbox
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/sandbox:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/sandbox:latest
+            ${{ env.REGISTRY_URL }}/sandbox:${{ github.sha }}
+            ${{ env.REGISTRY_URL }}/sandbox:latest
 
   build-chat-frontend:
     name: Build Chat Frontend Image
@@ -75,18 +85,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker $(echo "$REGISTRY_URL" | cut -d/ -f1) --quiet
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push chat-frontend
         uses: docker/build-push-action@v6
@@ -96,8 +107,8 @@ jobs:
           cache-from: type=gha,scope=chat-frontend
           cache-to: type=gha,mode=max,scope=chat-frontend
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/chat-frontend:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/chat-frontend:latest
+            ${{ env.REGISTRY_URL }}/chat-frontend:${{ github.sha }}
+            ${{ env.REGISTRY_URL }}/chat-frontend:latest
 
   build-platform-bootstrap:
     name: Build Platform Bootstrap Image
@@ -106,18 +117,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker $(echo "$REGISTRY_URL" | cut -d/ -f1) --quiet
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push platform-bootstrap
         uses: docker/build-push-action@v6
@@ -127,8 +139,8 @@ jobs:
           cache-from: type=gha,scope=platform-bootstrap
           cache-to: type=gha,mode=max,scope=platform-bootstrap
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/platform-bootstrap:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/platform-bootstrap:latest
+            ${{ env.REGISTRY_URL }}/platform-bootstrap:${{ github.sha }}
+            ${{ env.REGISTRY_URL }}/platform-bootstrap:latest
 
   build-budget-controller:
     name: Build Budget Controller Image
@@ -137,18 +149,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker $(echo "$REGISTRY_URL" | cut -d/ -f1) --quiet
+
+      - uses: docker/setup-buildx-action@v3
 
       - name: Build and push budget-controller
         uses: docker/build-push-action@v6
@@ -158,5 +171,5 @@ jobs:
           cache-from: type=gha,scope=budget-controller
           cache-to: type=gha,mode=max,scope=budget-controller
           tags: |
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/budget-controller:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.OWNER }}/budget-controller:latest
+            ${{ env.REGISTRY_URL }}/budget-controller:${{ github.sha }}
+            ${{ env.REGISTRY_URL }}/budget-controller:latest

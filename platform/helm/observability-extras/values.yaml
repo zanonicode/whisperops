@@ -1,3 +1,11 @@
+# PrometheusRule CR is gated because the LGTM Mimir deployment does not
+# include the prometheus-operator stack — the CRD `monitoring.coreos.com/v1`
+# is not installed by default. Enable once prometheus-operator (or
+# kube-prometheus-stack) is added; otherwise the rules can be loaded as a
+# Mimir ruler ConfigMap separately.
+prometheusOperator:
+  enabled: false
+
 otelCollector:
   config:
     receivers:

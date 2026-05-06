@@ -1,3 +1,4 @@
+import os
 import resource
 import subprocess
 import tempfile
@@ -20,16 +21,21 @@ def _setlimits(memory_bytes: int) -> None:
 
 def run_in_subprocess(
     code: str,
-    cred_path: str,
-    dataset_signed_url: str,
     timeout_s: int,
     memory_bytes: int,
 ) -> ExecResult:
+    """Execute Python code in an isolated subprocess.
+
+    Credentials come from the DD-12 mounted SA key via the
+    GOOGLE_APPLICATION_CREDENTIALS environment variable — no per-call
+    credential passing.
+    """
     tmp = tempfile.mkdtemp(prefix="exec-")
     env = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "GOOGLE_APPLICATION_CREDENTIALS": cred_path,
-        "DATASET_URL": dataset_signed_url,
+        "GOOGLE_APPLICATION_CREDENTIALS": os.environ.get(
+            "GOOGLE_APPLICATION_CREDENTIALS", "/var/run/gcp/credentials.json"
+        ),
         "OUT_DIR": tmp,
         "HOME": "/tmp",
     }

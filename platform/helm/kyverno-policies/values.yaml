@@ -1,0 +1,4 @@
+imageRegistry:
+  region: us-central1
+  projectId: ""
+  repositoryName: whisperops-images

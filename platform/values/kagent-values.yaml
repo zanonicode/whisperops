@@ -1,0 +1,23 @@
+# DD-20 (DESIGN v1.3): autogen_ext AnthropicChatCompletionClient instantiates
+# anthropic.Anthropic() WITHOUT passing the api_key from the Secret-backed
+# ModelConfig chain. The SDK resolves auth solely from the env var at process
+# startup. Without ANTHROPIC_API_KEY on the `app` container, every Agent
+# invoke fails with:
+#   "Could not resolve authentication method. Expected either api_key or
+#    auth_token to be set."
+#
+# Source of truth for the value is the `anthropic-api-key` Secret in
+# kagent-system (key `api-key`). The same Secret is replicated into each
+# agent-* namespace by Crossplane and referenced by ModelConfig.apiKeySecretRef.
+#
+# Schema verified against kagent helm chart oci://ghcr.io/kagent-dev/kagent/helm/kagent:0.4.3
+#   templates/deployment.yaml: container `app` declares `env:` with chart-default
+#   vars, then `{{- with .Values.app.env }}{{- toYaml . | nindent 12 }}{{- end }}`
+#   which appends additional env vars verbatim.
+app:
+  env:
+    - name: ANTHROPIC_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: anthropic-api-key
+          key: api-key

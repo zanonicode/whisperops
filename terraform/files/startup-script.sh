@@ -59,7 +59,17 @@ log "idpbuilder create completed"
 # 5. Distribute kubeconfig to ubuntu user
 log "Distributing kubeconfig to ubuntu user"
 mkdir -p /home/ubuntu/.kube
-cp /root/.kube/config /home/ubuntu/.kube/config
+if [ -f /root/.kube/config ]; then
+  cp /root/.kube/config /home/ubuntu/.kube/config
+elif [ -f /.kube/config ]; then
+  # idpbuilder ran with HOME=/ (no per-user home); kubeconfig landed at /.kube/config
+  mkdir -p /root/.kube
+  cp /.kube/config /root/.kube/config
+  cp /.kube/config /home/ubuntu/.kube/config
+else
+  log "ERROR: kubeconfig not found at /root/.kube/config or /.kube/config"
+  exit 1
+fi
 chown ubuntu:ubuntu /home/ubuntu/.kube/config
 chmod 600 /home/ubuntu/.kube/config
 
