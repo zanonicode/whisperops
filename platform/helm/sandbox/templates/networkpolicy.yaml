@@ -36,3 +36,13 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # OTel collector — allow telemetry export to the observability ns.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
