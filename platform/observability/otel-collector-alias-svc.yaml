@@ -1,0 +1,25 @@
+# Alias Service so callers can use the conventional "otel-collector" name.
+# The Helm release name is "opentelemetry-collector"; this Service mirrors
+# its selector so existing code/skeletons that hardcode "otel-collector"
+# resolve correctly without forking the chart.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    whisperops.io/component: otel-collector-alias
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opentelemetry-collector
+    app.kubernetes.io/instance: opentelemetry-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
