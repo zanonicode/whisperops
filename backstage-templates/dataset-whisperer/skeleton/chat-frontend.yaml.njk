@@ -1,34 +1,25 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Application
+# Demo wiring: route the per-agent chat URL to kagent's built-in UI in
+# kagent-system. ExternalName Service crosses namespaces; the per-agent
+# Ingress (ingress.yaml) then targets this Service in the same namespace.
+#
+# Trade-off: the kagent UI shows ALL agents in the cluster (the user picks
+# `planner` from a dropdown) instead of being scoped to this one agent.
+# Acceptable for a first end-to-end demo. A purpose-built per-agent chat UI
+# is tracked as Phase 3 in docs/NEXT_STEPS.md and would replace this file.
+apiVersion: v1
+kind: Service
 metadata:
   name: chat-frontend-${{ values.agent_name }}
-  namespace: argocd
+  namespace: agent-${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "3"
+  labels:
+    whisperops.io/agent: agent-${{ values.agent_name }}
 spec:
-  project: default
-  source:
-    repoURL: http://gitea.gitea.svc.cluster.local/whisperops/whisperops.git
-    targetRevision: HEAD
-    path: platform/helm/chat-frontend
-    helm:
-      releaseName: chat-frontend-${{ values.agent_name }}
-      values: |
-        agentId: agent-${{ values.agent_name }}
-        baseDomain: ${{ values.base_domain | default('sslip.io') }}
-        plannerUrl: http://planner.agent-${{ values.agent_name }}.svc.cluster.local:8080
-        ingress:
-          enabled: true
-          tls:
-            - secretName: agent-${{ values.agent_name }}-tls
-              hosts:
-                - agent-${{ values.agent_name }}.${{ values.base_domain | default('sslip.io') }}
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: agent-${{ values.agent_name }}
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=false
+  type: ExternalName
+  externalName: kagent.kagent-system.svc.cluster.local
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
