@@ -34,6 +34,20 @@ spec:
           description: What does this agent analyse? Used in Backstage catalog.
           maxLength: 200
 
+    - title: Platform routing
+      required:
+        - base_domain
+      properties:
+        base_domain:
+          title: Base domain
+          type: string
+          description: >
+            Hostname suffix for the agent's chat URL. Format:
+            `<vm-external-ip>.sslip.io` (e.g. `136.115.224.138.sslip.io`).
+            See `kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}`
+            for the current platform value.
+          pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}\.sslip\.io$|^[a-z0-9.-]+\.[a-z]{2,}$'
+
     - title: Dataset & Model Configuration
       required:
         - dataset_id
@@ -85,7 +99,7 @@ spec:
           budget_usd: ${{ parameters.budget_usd }}
           project_id: ${{ parameters.project_id | default('') }}
           region: US-CENTRAL1
-          base_domain: sslip.io
+          base_domain: ${{ parameters.base_domain }}
 
     - id: publish-gitea
       name: Commit manifests to Gitea

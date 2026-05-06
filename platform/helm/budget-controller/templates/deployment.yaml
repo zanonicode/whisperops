@@ -20,6 +20,10 @@ spec:
         app.kubernetes.io/name: budget-controller
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       serviceAccountName: {{ .Values.serviceAccount.name }}
@@ -35,16 +39,18 @@ spec:
               value: {{ .Values.pollInterval | quote }}
             - name: LANGFUSE_HOST
               value: {{ .Values.langfuse.host | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://opentelemetry-collector.observability.svc.cluster.local:4317"
             - name: {{ .Values.langfuse.publicKeyEnvVar }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.langfuse.secretName }}
-                  key: public-key
+                  key: {{ .Values.langfuse.publicKeySecretKey | default "LANGFUSE_PUBLIC_KEY" }}
             - name: {{ .Values.langfuse.secretKeyEnvVar }}
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.langfuse.secretName }}
-                  key: secret-key
+                  key: {{ .Values.langfuse.secretKeySecretKey | default "LANGFUSE_SECRET_KEY" }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

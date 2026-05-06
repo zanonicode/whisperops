@@ -2,32 +2,15 @@
 # Enables Tempo OTLP ingest, sets replication factor to 1 for single-node
 # kind, and removes anti-affinity / topology-spread that prevent scheduling
 # on a single-node cluster.
+# DD-30 (DESIGN v1.7): lgtm-distributed Tempo disabled. The distributor
+# enforces 'min 2 live ingester replicas' even with replication_factor=1,
+# which can't be satisfied on a single-node kind cluster. The standalone
+# `tempo-mono` (grafana/tempo single-binary chart) handles all OTLP
+# traffic; this sub-chart sits idle and burns ~500 MiB. Disabling reclaims
+# the resources. Re-enable for multi-node clusters where replicas can
+# actually schedule.
 tempo:
-  metricsGenerator:
-    enabled: false
-  traces:
-    otlp:
-      grpc:
-        enabled: true
-      http:
-        enabled: true
-  ingester:
-    affinity: {}
-    topologySpreadConstraints: []
-    config:
-      replication_factor: 1
-  distributor:
-    affinity: {}
-    topologySpreadConstraints: []
-  querier:
-    affinity: {}
-    topologySpreadConstraints: []
-  queryFrontend:
-    affinity: {}
-    topologySpreadConstraints: []
-  compactor:
-    affinity: {}
-    topologySpreadConstraints: []
+  enabled: false
 
 # Enable the grafana sidecar to auto-load ConfigMaps labeled
 # grafana_dashboard=1 (whisperops-dashboards ConfigMap from

@@ -1,0 +1,24 @@
+# Kyverno chart 3.2.6 ships the cleanup CronJobs with image
+# `bitnami/kubectl:1.28.5` which Bitnami removed from public registry,
+# causing ImagePullBackOff every 10min. Pin to a tag that still exists.
+cleanupJobs:
+  admissionReports:
+    image:
+      repository: bitnami/kubectl
+      tag: "1.31.2"
+  clusterAdmissionReports:
+    image:
+      repository: bitnami/kubectl
+      tag: "1.31.2"
+  clusterEphemeralReports:
+    image:
+      repository: bitnami/kubectl
+      tag: "1.31.2"
+  ephemeralReports:
+    image:
+      repository: bitnami/kubectl
+      tag: "1.31.2"
+  updateRequests:
+    image:
+      repository: bitnami/kubectl
+      tag: "1.31.2"

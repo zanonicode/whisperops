@@ -29,6 +29,10 @@ releases:
     createNamespace: true
     chart: kyverno/kyverno
     version: "3.2.6"
+    # Cleanup CronJobs reference an upstream-removed image tag. See
+    # platform/observability/kyverno-values.yaml header for context.
+    values:
+      - /tmp/whisperops/platform/observability/kyverno-values.yaml
 
   - name: lgtm-distributed
     namespace: observability
@@ -57,5 +61,9 @@ releases:
     # The Secret `anthropic-api-key` (key `api-key`) must exist in the
     # kagent-system namespace BEFORE this release reconciles — bootstrap
     # populates it from SOPS-decrypted secrets/anthropic.enc.yaml.
+    # DD-31: postRender strips chart-default AUTOGEN_DISABLE_RUNTIME_TRACING
+    # env entry so the final manifest has exactly ONE entry (=false). Requires
+    # `yq` on PATH at helmfile-apply time.
     values:
       - /tmp/whisperops/platform/values/kagent-values.yaml
+    postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh

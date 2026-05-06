@@ -11,6 +11,17 @@ mode: deployment
 image:
   repository: otel/opentelemetry-collector-contrib
 
+# Resource limits — chart warned `useGOMEMLIMIT enabled but limits not set`.
+# Setting limit-memory unblocks GOMEMLIMIT and prevents the collector from
+# being OOM-killed under burst load.
+resources:
+  requests:
+    cpu: "50m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
 # Open the OTLP endpoint cluster-wide (default behavior, but explicit).
 ports:
   otlp:

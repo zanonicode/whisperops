@@ -3,6 +3,14 @@ image:
   pullPolicy: IfNotPresent
   tag: "latest"
 
+# DD-26 (DESIGN v1.7): operator-supplied platform values. Surfaced via the
+# `platform-config` ConfigMap so Backstage scaffolder can read them at
+# agent-creation time without prompting on every form.
+platformConfig:
+  baseDomain: ""    # e.g. "136.115.224.138.sslip.io" — REQUIRED
+  registryUrl: ""   # e.g. "us-central1-docker.pkg.dev/whisperops/whisperops-images"
+  projectId: ""     # e.g. "whisperops"
+
 datasetsBucket: ""
 
 secrets:

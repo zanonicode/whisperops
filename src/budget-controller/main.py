@@ -58,21 +58,42 @@ budget_100_counter = meter.create_counter(
 
 
 def get_langfuse_spend(agent_id: str) -> float:
+    """Sum totalCost across observations whose name embeds the agent's
+    namespace+name (autogen emits `create_agent <ns>__NS__<name>` and
+    similar). agent_id format: `<namespace>/<name>`.
+
+    Langfuse API: /api/public/observations supports name substring search
+    via the `name` query param. Pagination via page/limit; we cap at 200
+    observations per poll which covers ~3h of activity at 1 query/min.
+    """
+    namespace, name = agent_id.split("/", 1)
+    name_token = f"{namespace.replace('-', '_')}__NS__{name}"
+    total = 0.0
+    page = 1
     with httpx.Client(timeout=10) as http:
-        response = http.get(
-            f"{LANGFUSE_HOST}/api/public/metrics/usage",
-            auth=(LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY),
-            params={"agentId": agent_id, "window": "30d"},
-        )
-        response.raise_for_status()
-        data = response.json()
-        return float(data.get("totalCost", 0.0))
+        while page <= 4:
+            response = http.get(
+                f"{LANGFUSE_HOST}/api/public/observations",
+                auth=(LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY),
+                params={"name": name_token, "limit": 50, "page": page},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            for obs in payload.get("data", []):
+                cost = (obs.get("calculatedTotalCost")
+                        or obs.get("usage", {}).get("totalCost")
+                        or 0.0)
+                total += float(cost)
+            if len(payload.get("data", [])) < 50:
+                break
+            page += 1
+    return total
 
 
 def list_agent_crds(api: k8s_client.CustomObjectsApi) -> list[dict]:
     result = api.list_cluster_custom_object(
         group="kagent.dev",
-        version="v1",
+        version="v1alpha1",
         plural="agents",
     )
     return result.get("items", [])
@@ -114,7 +135,7 @@ def emit_warning_event(
         ),
         involved_object=k8s_client.V1ObjectReference(
             kind="Agent",
-            api_version="kagent.dev/v1",
+            api_version="kagent.dev/v1alpha1",
             name=agent_name,
             namespace=namespace,
         ),

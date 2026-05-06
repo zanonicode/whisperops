@@ -101,6 +101,43 @@ ar-pull-secret: ## Create/refresh Artifact Registry imagePullSecret in all agent
 	done
 	@echo "Token expires in ~60 minutes. Re-run 'make ar-pull-secret' to refresh."
 
+# DD-29: SOPS-decrypt secrets/langfuse.enc.yaml -> langfuse-credentials Secret
+# in observability ns. Used by OTel collector (otlphttp/langfuse exporter)
+# and by Grafana (Infinity datasource Basic auth env-var substitution).
+# Re-run after rotating Langfuse keys or recreating the cluster.
+langfuse-secret: ## Materialize langfuse-credentials Secret from SOPS-encrypted source
+	@[ -f secrets/langfuse.enc.yaml ] || (echo "ERROR: secrets/langfuse.enc.yaml not found"; exit 1)
+	@[ -f age.key ] || (echo "ERROR: age.key not found in repo root"; exit 1)
+	@SOPS_AGE_KEY_FILE=age.key sops --decrypt secrets/langfuse.enc.yaml > /tmp/lf.dec.yaml
+	@PUB=$$(grep '^LANGFUSE_PUBLIC_KEY:' /tmp/lf.dec.yaml | awk '{print $$2}'); \
+	 SEC=$$(grep '^LANGFUSE_SECRET_KEY:' /tmp/lf.dec.yaml | awk '{print $$2}'); \
+	 HOST=$$(grep '^LANGFUSE_HOST:' /tmp/lf.dec.yaml | awk '{print $$2}'); \
+	 OTLP="$$HOST/api/public/otel"; \
+	 BASIC=$$(printf "%s:%s" "$$PUB" "$$SEC" | base64 | tr -d '\n'); \
+	 kubectl create secret generic langfuse-credentials -n observability \
+		--from-literal=LANGFUSE_PUBLIC_KEY="$$PUB" \
+		--from-literal=LANGFUSE_SECRET_KEY="$$SEC" \
+		--from-literal=LANGFUSE_HOST="$$HOST" \
+		--from-literal=LANGFUSE_OTLP_ENDPOINT="$$OTLP" \
+		--from-literal=LANGFUSE_BASIC_AUTH="$$BASIC" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@rm -f /tmp/lf.dec.yaml
+	@echo "  ✓ langfuse-credentials Secret applied in observability namespace"
+
+# DD-23 + DD-26: regenerate platform/external-access/ingresses.yaml with the
+# current VM external IP. Run whenever the VM is recreated and gets a new
+# external IP. Sed-replaces every sslip.io host occurrence.
+# Usage: make external-ingresses VM_IP=1.2.3.4
+external-ingresses: ## Regenerate external-access ingresses for new VM_IP
+	@[ -n "$(VM_IP)" ] || (echo "ERROR: VM_IP is not set. Usage: make external-ingresses VM_IP=<ip>"; exit 1)
+	@OLD_IP=$$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.sslip\.io' platform/external-access/ingresses.yaml | head -1 | sed 's/\.sslip\.io//'); \
+	 if [ -z "$$OLD_IP" ]; then echo "ERROR: could not detect existing IP"; exit 1; fi; \
+	 echo "  Old IP: $$OLD_IP -> New IP: $(VM_IP)"; \
+	 sed -i.bak "s/$$OLD_IP\.sslip\.io/$(VM_IP).sslip.io/g" platform/external-access/ingresses.yaml; \
+	 rm -f platform/external-access/ingresses.yaml.bak; \
+	 kubectl apply -f platform/external-access/ingresses.yaml; \
+	 echo "  ✓ Ingresses regenerated and applied"
+
 # ── Datasets ───────────────────────────────────────────────────────────────────
 
 upload-datasets: ## Upload all CSVs from datasets/ to the shared GCS datasets bucket

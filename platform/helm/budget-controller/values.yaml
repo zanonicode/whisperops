@@ -1,9 +1,10 @@
 replicaCount: 1
 
 image:
-  repository: gitea.local/whisperops/budget-controller
+  # DD-14: GCP Artifact Registry. DD-28: budget-controller activated in v0.3.
+  repository: us-central1-docker.pkg.dev/whisperops/whisperops-images/budget-controller
   pullPolicy: IfNotPresent
-  tag: "latest"
+  tag: "0.1.0"
 
 pollInterval: 60
 
@@ -11,8 +12,14 @@ langfuse:
   secretName: langfuse-credentials
   publicKeyEnvVar: LANGFUSE_PUBLIC_KEY
   secretKeyEnvVar: LANGFUSE_SECRET_KEY
+  publicKeySecretKey: LANGFUSE_PUBLIC_KEY
+  secretKeySecretKey: LANGFUSE_SECRET_KEY
   hostEnvVar: LANGFUSE_HOST
-  host: "https://cloud.langfuse.com"
+  host: "https://us.cloud.langfuse.com"
+
+# Reference the per-namespace AR pull Secret (DD-18).
+imagePullSecrets:
+  - name: ar-pull-secret
 
 resources:
   requests:
