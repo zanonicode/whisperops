@@ -72,9 +72,7 @@ Decision pointers worth knowing up front:
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture — components, request flow, trust boundaries |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security model — isolation, secrets, residual risks |
 | [`docs/SECRETS.md`](docs/SECRETS.md) | **SOPS + age guide** — generate your own `age.key`, build each `secrets/*.enc.yaml` from your own credentials, materialization order |
-| [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | _Superseded by OPERATIONS.md §3._ Kept for historical context. |
-| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | _Superseded by OPERATIONS.md §1._ Kept for historical context. |
-| [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) | _Current open items live in DESIGN §15._ Roadmap remains useful. |
+| [`docs/runbooks/incident-response.md`](docs/runbooks/incident-response.md) | Budget-breach incident procedure (scaling, rotation, alert quieting) |
 | `.claude/sdd/features/DESIGN_whisperops.md` | Full architecture spec + 31 decisions. **Internal-only and gitignored under `.claude/`.** |
 | `.claude/sdd/features/DEFINE_whisperops.md` | Acceptance tests, success criteria. Internal-only and gitignored. |
 | `tests/smoke/` | `platform-up.sh`, `agent-creation.sh`, `query-roundtrip.sh`. Set `IN_CLUSTER=1` for kubectl-port-forward mode (the practical default for the prototype). |
