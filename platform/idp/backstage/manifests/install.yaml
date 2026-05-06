@@ -143,12 +143,9 @@ data:
       session:
         secret: MW2sV-sIPngEl26vAzatV-6VqfsgAx4bPIz7PuE_2Lk=
       providers:
-        keycloak-oidc:
-          development:
-            metadataUrl: ${KEYCLOAK_NAME_METADATA}
-            clientId: backstage
-            clientSecret: ${KEYCLOAK_CLIENT_SECRET}
-            prompt: auto
+        guest:
+          dangerouslyAllowOutsideDevelopment: true
+    signInPage: guest
 
     scaffolder:
       # see https://backstage.io/docs/features/software-templates/configuration for software template options
@@ -183,8 +180,6 @@ data:
               url: https://cnoe.localtest.me:8443/argocd
               username: admin
               password: ${ARGOCD_ADMIN_PASSWORD}
-    argoWorkflows:
-        baseUrl: ${ARGO_WORKFLOWS_URL}
 ---
 apiVersion: v1
 kind: Secret
@@ -379,9 +374,6 @@ spec:
         POSTGRES_DB: backstage
         POSTGRES_USER: backstage
         POSTGRES_PASSWORD: "{{.POSTGRES_PASSWORD}}"
-        ARGO_WORKFLOWS_URL: https://cnoe.localtest.me:8443/argo-workflows
-        KEYCLOAK_NAME_METADATA: https://cnoe.localtest.me:8443/keycloak/realms/cnoe/.well-known/openid-configuration
-        KEYCLOAK_CLIENT_SECRET: "{{.BACKSTAGE_CLIENT_SECRET}}"
         ARGOCD_AUTH_TOKEN: "argocd.token={{.ARGOCD_SESSION_TOKEN}}"
         ARGO_CD_URL: 'https://argocd-server.argocd.svc.cluster.local/api/v1/'
   data:
@@ -389,10 +381,6 @@ spec:
       remoteRef:
         key: keycloak-clients
         property: ARGOCD_SESSION_TOKEN
-    - secretKey: BACKSTAGE_CLIENT_SECRET
-      remoteRef:
-        key: keycloak-clients
-        property: BACKSTAGE_CLIENT_SECRET
   dataFrom:
     - sourceRef:
         generatorRef:

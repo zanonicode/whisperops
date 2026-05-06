@@ -161,10 +161,13 @@ module "datasets_bucket" {
   source  = "terraform-google-modules/cloud-storage/google//modules/simple_bucket"
   version = "12.3.0"
 
-  project_id               = var.project_id
-  name                     = "${var.project_id}-datasets"
-  location                 = var.region
-  force_destroy            = false
+  project_id = var.project_id
+  name       = "${var.project_id}-datasets"
+  location   = var.region
+  # Demo/learning environment: terraform destroy is the canonical teardown path
+  # and is gated by an interactive confirmation in `make destroy` (DD-32).
+  # Set to false if this stack is ever promoted to a production-leaning context.
+  force_destroy            = true
   versioning               = true
   bucket_policy_only       = true
   public_access_prevention = "enforced"

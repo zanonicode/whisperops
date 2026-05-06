@@ -1,6 +1,6 @@
 # WhisperOps — Operations Handbook
 
-> Canonical operator-facing guide for the v0.3 prototype. Reflects DESIGN v1.7 (DD-1 through DD-31) and the v1.4 live-deploy reconciliation. Three sections:
+> Canonical operator-facing guide for the v0.3 prototype. Reflects DESIGN v1.10 (DD-1 through DD-36) and the v1.4 live-deploy reconciliation. Three sections:
 >
 > 1. **End-to-end deploy guide** — Stage 0 (preflight) through Stage 9 (first agent)
 > 2. **Backstage deploy + agent interaction** — using the platform once it's up
@@ -59,16 +59,18 @@ Provisions everything in DD-14 + DD-19's "TF tier":
 - Artifact Registry repo `whisperops-images` (DD-14)
 
 ```bash
-make tf-apply PROJECT_ID=<your-project-id>
+make tf-apply
 terraform -chdir=terraform output -raw vm_external_ip
 terraform -chdir=terraform output -raw registry_url
 ```
+
+`tf-apply` reads `project_id` from `terraform/envs/demo/terraform.tfvars` (validated by `make preflight`), so no CLI variable is required.
 
 Capture both outputs — you'll need them in Stages 4, 5, and 7.
 
 ### Stage 2 — VM bootstrap (IDP layer)
 
-The startup script installs Docker + idpbuilder and runs `idpbuilder create --use-path-routing`, which deploys the CNOE ref-implementation (`platform/idp/`, vendored): ArgoCD, Gitea, Backstage, Keycloak, External Secrets Operator, NGINX Ingress, cert-manager, argo-workflows, metric-server, spark-operator. Wait roughly 6–8 minutes after `tf-apply` returns.
+The startup script installs Docker + idpbuilder and runs `idpbuilder create --use-path-routing`, which deploys the CNOE ref-implementation (`platform/idp/`, vendored): ArgoCD, Gitea, Backstage, External Secrets Operator, NGINX Ingress, cert-manager, metric-server, spark-operator. Keycloak is included but scaled to zero (DD-33); argo-workflows is removed (DD-35). Wait roughly 6–8 minutes after `tf-apply` returns.
 
 ```bash
 gcloud compute ssh whisperops-vm --zone=us-central1-a -- \
@@ -82,16 +84,48 @@ The `/root/.kube/config` fallback in `terraform/files/startup-script.sh` exists 
 
 ### Stage 3 — copy whisperops repo to the VM
 
-The application platform layer (Stage 4) runs `helmfile apply` from inside the VM, and helmfile's value-file refs (`platform/values/*.yaml`, `platform/observability/*.yaml`) are resolved relative to the file. Push the repo onto the VM:
+The application platform layer runs `helmfile apply` from inside the VM; helmfile resolves value-file refs (`platform/values/*.yaml`, `platform/observability/*.yaml`) relative to the file. Use `make copy-repo` (DD-34) to push the repo:
 
 ```bash
-gcloud compute scp --zone=us-central1-a --recurse \
-  $(git rev-parse --show-toplevel) whisperops-vm:/tmp/whisperops/
+make copy-repo
+# Tars the repo (excluding .terraform, .git, node_modules, secrets/*.dec.yaml,
+# __pycache__, dist) and streams it via gcloud compute ssh into /tmp/whisperops
+# on whisperops-vm.
 ```
 
-(`rsync` over SSH is fine too — the directory layout is what matters.)
+### Stages 4–7 — Recommended bring-up
 
-### Stage 4 — application platform layer (helmfile)
+After Stage 3, the full inside-VM sequence (helmfile apply, Keycloak scale-to-zero, Backstage host rewrite, secrets, ingresses, platform-config, platform-bootstrap) is automated by `make deploy-vm` (DD-34):
+
+```bash
+make copy-repo && make deploy-vm
+```
+
+`deploy-vm` SSHes into `whisperops-vm` and runs `make _vm-bootstrap`, which:
+
+1. Derives `VM_IP` from the GCP metadata server (no Terraform state needed on the VM)
+2. Rewrites all `cnoe.localtest.me` references in `platform/idp/backstage/manifests/install.yaml` to sslip.io URLs (`platform/scripts/rewrite-backstage-hosts.sh`, DD-36)
+3. Runs `helmfile -f platform/helmfile.yaml.gotmpl apply`
+4. Scales Keycloak to 0 replicas (`platform/values/keycloak-postrender.sh`, DD-33 — Keycloak OIDC is disabled; Backstage uses guest auth)
+5. Materializes the `langfuse-credentials` Secret (`make langfuse-secret`)
+6. Regenerates and applies external Ingresses (`make external-ingresses`)
+7. Updates the `platform-config` ConfigMap with `base_domain` and `registry_url`
+8. Runs the platform-bootstrap Job (`make platform-bootstrap`)
+
+Open the firewall before running `deploy-vm` if this is the first bring-up for this VM:
+
+```bash
+gcloud compute firewall-rules create allow-kind-ingress \
+  --allow=tcp:8443 --target-tags=whisperops-vm
+```
+
+After `deploy-vm` completes, proceed to Stage 5 (secrets materialization) on your local workstation.
+
+### Manual bring-up (for debugging)
+
+Use this step-by-step sequence when `make deploy-vm` fails partway and you need to resume from a specific point.
+
+#### Stage 4 — application platform layer (helmfile)
 
 SSH in, install helm + helmfile if absent, then apply. Per DD-27, this is the **official v0.3 deploy mechanism** for the platform layer — ArgoCD's `root-app.yaml` is a v0.4 stub.
 
@@ -106,8 +140,16 @@ kubectl --kubeconfig=/root/.kube/config create ns kagent
 kubectl --kubeconfig=/root/.kube/config create ns kagent-system
 kubectl --kubeconfig=/root/.kube/config create ns observability
 
+# Rewrite Backstage hosts before applying (DD-36)
+VM_IP=$(curl -sf -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
+bash platform/scripts/rewrite-backstage-hosts.sh "$VM_IP"
+
 # Apply
 KUBECONFIG=/root/.kube/config helmfile -f platform/helmfile.yaml.gotmpl apply
+
+# Scale Keycloak to 0 (DD-33)
+bash platform/values/keycloak-postrender.sh
 ```
 
 Expected releases (5 + 1):
@@ -131,13 +173,13 @@ kubectl --kubeconfig=/root/.kube/config get providers.pkg.crossplane.io
 # Expect: provider-gcp-storage, provider-gcp-iam, provider-gcp-cloudplatform, provider-family-gcp — all Healthy=True
 ```
 
-### Stage 5 — secrets materialization (order matters)
+#### Stage 5 — secrets materialization (order matters)
 
 Run from your **local workstation** (where SOPS has the age key), not the VM. `kubectl` here uses your local kubeconfig pointing at the VM cluster — set up an SSH tunnel or scp `~/.kube/config` from `/tmp/whisperops/` first.
 
 > **Bringing your own credentials?** See [docs/SECRETS.md](SECRETS.md) for how to generate an `age.key`, point `.sops.yaml` at it, and rebuild each `secrets/*.enc.yaml` from your own Anthropic / OpenAI / Langfuse / GCP / Supabase keys before running the steps below.
 
-#### 5a — Crossplane GCP credentials (must be first; providers can't reconcile without it)
+##### 5a — Crossplane GCP credentials (must be first; providers can't reconcile without it)
 
 ```bash
 SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/crossplane-gcp-creds.enc.yaml \
@@ -147,7 +189,7 @@ kubectl apply -f platform/crossplane/provider-config.yaml
 
 > **Newline corruption gotcha (recurring):** the SOPS-decrypted JSON inside `gcp_service_account_key_json` may emerge with literal newlines inside the `private_key` string. If Crossplane's ProviderConfig logs `error unmarshaling credentials: invalid character '\n' in string literal`, run the parse-and-reescape repair pass from `docs/NEXT_STEPS.md §0.6` before applying.
 
-#### 5b — Langfuse credentials (DD-29)
+##### 5b — Langfuse credentials (DD-29)
 
 ```bash
 make langfuse-secret
@@ -157,7 +199,7 @@ make langfuse-secret
 
 This Secret is consumed by the OTel collector's `otlphttp/langfuse` exporter (`extraEnvs` with `optional: true`) and by Grafana's `envFromSecret` for the Infinity datasource. Rerun any time Langfuse keys rotate.
 
-#### 5c — Anthropic API key (kagent app container, DD-20)
+##### 5c — Anthropic API key (kagent app container, DD-20)
 
 ```bash
 SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/anthropic.enc.yaml \
@@ -169,7 +211,7 @@ SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/anthropic.enc.yaml \
 
 Restart kagent so the env var picks up: `kubectl rollout restart deploy/kagent -n kagent-system`.
 
-#### 5d — OpenAI API key (kagent UI sidecar)
+##### 5d — OpenAI API key (kagent UI sidecar)
 
 ```bash
 SOPS_AGE_KEY_FILE=$PWD/age.key sops --decrypt secrets/openai.enc.yaml \
@@ -182,7 +224,7 @@ kubectl rollout restart deploy/kagent -n kagent-system
 
 The `kagent` Deployment will go from 4/5 ready to 5/5 once `kagent-openai` exists (the querydoc UI sidecar requires it).
 
-### Stage 6 — datasets upload
+#### Stage 6 — datasets upload
 
 ```bash
 make upload-datasets PROJECT_ID=<your-project-id>
@@ -191,7 +233,7 @@ make upload-datasets PROJECT_ID=<your-project-id>
 
 The three curated CSVs ship with the repo. Any additional dataset must be added under `datasets/`, then the platform-bootstrap Job re-run (`make regenerate-profiles`) to compute its profile JSON.
 
-### Stage 7 — external access (DD-23, DD-26)
+#### Stage 7 — external access (DD-23, DD-26)
 
 The CNOE NGINX ingress maps host `:8443` to kind container `:443`. Use sslip.io for wildcard DNS that requires no DNS configuration.
 
@@ -252,12 +294,38 @@ The `query-roundtrip.sh` script asks the agent a numerical question and asserts 
 | Anthropic API returns `overloaded_error` mid-query | Transient Anthropic capacity issue | Retry. No code change. |
 | kagent autogen `sqlite UNIQUE constraint failed` after deleting and recreating an Agent CR | autogen v0.4.3 stores session state in an emptyDir-backed sqlite that doesn't reconcile with kagent's CR lifecycle | `kubectl rollout restart deploy/kagent -n kagent-system` (the emptyDir clears) |
 | `chat-frontend` pod `ImagePullBackOff` ~60 min after deploy | AR pull-secret token expired | `make ar-pull-secret PROJECT_ID=<id>` |
-| All sslip.io URLs unreachable after `terraform destroy && terraform apply` | VM external IP changed | `make external-ingresses VM_IP=<new-ip>`; update `platform-config` ConfigMap; **re-scaffold each agent via Backstage** (DD-25) — Gitea-side patches are reverted by ArgoCD selfHeal |
+| All sslip.io URLs unreachable after `terraform destroy && terraform apply` | VM external IP changed | Re-run Stage 7: `make external-ingresses VM_IP=<new-ip>` + recreate the `platform-config` ConfigMap. After a full destroy+apply there are no agents to re-scaffold (cluster was wiped); the regular bring-up handles everything from scratch. |
 | OTel collector logs `at least 2 live replicas required, could only find 0` | lgtm-distributed Tempo distributor enforces min-2-ingester even with `replication_factor: 1` (single-node infeasible) | DD-30: `tempo.enabled: false` in `platform/observability/lgtm-values.yaml`; tempo-mono is sole backend |
 | kagent emits zero spans even with `otel.tracing.enabled: true` | Chart hardcodes `AUTOGEN_DISABLE_RUNTIME_TRACING=true` (DD-22); override silently dropped if helmfile postRender script (DD-31) can't find `yq` on PATH | Install `yq` on the apply host; verify with `kubectl get deploy kagent -n kagent-system -o yaml \| grep -c AUTOGEN_DISABLE_RUNTIME_TRACING` (must be 1, value `false`) |
 | `sops --decrypt` fails with "Error getting data key: 0 successful groups required, got 0" on a fresh laptop | Local clock skewed; SOPS refuses with no helpful message | `sudo systemctl status systemd-timesyncd` (Linux) / `sntp -sS time.apple.com` (macOS). Resync, retry. |
 | Crossplane ProviderConfig `error unmarshaling credentials: invalid character '\n' in string literal` | SOPS-decrypted JSON has real newlines inside `private_key` | Repair pass — see `docs/NEXT_STEPS.md §0.6` |
 | `kubectl get apps -A` shows `agent-X` Healthy but agent chat returns 503 | Budget-controller (DD-28) detected spend ≥ budget; Kyverno blocked sessions | Increase budget annotation `whisperops.io/budget-usd` on the namespace, or wait for the next billing window |
+
+### Teardown (DD-32)
+
+The reverse of bring-up has a strict ordering. Skipping or reordering steps leaves orphaned GCP resources outside both tfstate and any controller's reach.
+
+**Canonical order** (executed by `make destroy`):
+
+1. **Drain Crossplane Managed Resources.** Per-agent buckets, service accounts, and IAM bindings created by Backstage scaffolds are owned by Crossplane (`*.gcp.upbound.io`), not Terraform. Deleting Terraform first removes the bootstrap SA's IAM permissions, after which Crossplane finalizers can never complete and the GCP resources become orphaned. `make drain-crossplane` issues `kubectl delete --all` for every Crossplane GCP CRD and waits up to 5 min for finalizers.
+2. **Empty Crossplane-owned GCS buckets.** The Terraform-managed datasets bucket has `force_destroy = true` (demo-only; the destruction is gated by the confirmation prompt in step 1). Per-agent artifact buckets, however, are created by Crossplane Bucket CRs scaffolded by Backstage and may not all set the equivalent `forceDestroy` flag. `make empty-buckets PROJECT_ID=<id>` empties any bucket labelled `managed_by=crossplane`. The tfstate bucket (`<project>-tfstate`) is intentionally NOT touched — preserve it until you are sure the destroy succeeded.
+3. **Run `terraform destroy`.** With Crossplane drained and buckets empty, Terraform tears down the VM, VPC, static IP, bootstrap SA, datasets bucket, and Artifact Registry repo without errors.
+
+```bash
+make destroy                    # interactive: asks you to type the project id to confirm
+make destroy FORCE=1            # CI/scripted: skip the confirmation prompt
+make destroy SKIP_CROSSPLANE=1  # cluster already gone (kubectl unreachable)
+make destroy SKIP_BUCKETS=1     # buckets known to be empty
+```
+
+The targets `drain-crossplane` and `empty-buckets PROJECT_ID=<id>` can also run standalone if you want to clean up partial state without tearing down Terraform.
+
+**What `destroy` does not touch:**
+
+- `<project>-tfstate` GCS bucket (operator must remove manually after verifying destroy succeeded).
+- Gitea repos for agents (they live inside the kind cluster, gone with the VM).
+- Langfuse Cloud / Supabase / Anthropic / OpenAI accounts (external SaaS).
+- Local `secrets/*.dec.yaml`, `terraform.tfstate` cache, age key.
 
 ---
 
@@ -271,7 +339,7 @@ https://backstage.<vm-ip>.sslip.io:8443/
 
 The first time you load this, browsers will warn about the cert (Let's Encrypt + sslip.io interplay). Proceed anyway — this is a prototype.
 
-Login is via Keycloak (the CNOE ref-implementation provisions a default user `user1` / password retrievable via `kubectl get secret keycloak-config -n keycloak -o jsonpath='{.data.KEYCLOAK_ADMIN_PASSWORD}' | base64 -d`).
+Login uses Backstage guest auth (DD-33 — Keycloak OIDC is disabled and the Keycloak Deployment is scaled to zero). Click **Enter** on the guest sign-in page; no credentials required.
 
 ### Filling the form
 
@@ -472,7 +540,7 @@ kubectl logs -n whisperops-system deploy/budget-controller -f
 
 ## Cross-references
 
-- DESIGN decisions (DD-1 through DD-31) — `.claude/sdd/features/DESIGN_whisperops.md` (gitignored, internal)
+- DESIGN decisions (DD-1 through DD-36) — `.claude/sdd/features/DESIGN_whisperops.md` (gitignored, internal)
 - Acceptance tests — `.claude/sdd/features/DEFINE_whisperops.md` (gitignored, internal)
 - Architecture deep-dive — `docs/ARCHITECTURE.md`
 - Security model — `docs/SECURITY.md`
