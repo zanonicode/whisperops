@@ -331,15 +331,54 @@ The targets `drain-crossplane` and `empty-buckets PROJECT_ID=<id>` can also run 
 
 ## §2 — Backstage deploy + agent interaction
 
+### Caminho A — SSH tunnel + CNOE path-routing (DD-38, current default)
+
+The pre-built CNOE Backstage image hardcodes Keycloak SignInPage in its frontend bundle and ships without a guest provider plugin in the backend. DD-33's app-config-only guest auth attempt didn't work; DD-38 reverted to Keycloak OIDC and adopted SSH-tunnel access as the operational path. Custom-image rebuild is deferred to v0.4 (DESIGN §15 #22, bundled with #17 sslip→DNS).
+
+**Open the tunnel** (terminal 1, keep alive while testing):
+
+```bash
+gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 8443:127.0.0.1:8443
+```
+
+**Surfaces requiring the tunnel** (Keycloak OIDC dependent):
+
+| Surface | URL (via tunnel) | Login |
+|---|---|---|
+| Backstage | `https://cnoe.localtest.me:8443/` | Keycloak `user1`/`user2` (realm `cnoe`) |
+| ArgoCD | `https://cnoe.localtest.me:8443/argocd` | `admin` + initial-admin-secret |
+| Gitea | `https://cnoe.localtest.me:8443/gitea` | `giteaAdmin` + gitea-credential Secret |
+| Keycloak admin | `https://cnoe.localtest.me:8443/keycloak/admin/master/console/` | `admin` + KEYCLOAK_ADMIN_PASSWORD |
+
+**Surfaces NOT requiring the tunnel** (no Keycloak realm dependency; sslip.io external):
+
+| Surface | URL (direct) | Login |
+|---|---|---|
+| Grafana | `https://grafana.<vm-ip>.sslip.io:8443/` | `admin` + `lgtm-distributed-grafana` Secret |
+| Per-agent chat-frontend | `https://agent-<name>.<vm-ip>.sslip.io:8443/` | none |
+
+**Retrieving Keycloak realm credentials**:
+
+```bash
+kubectl get secret -n keycloak keycloak-config -o jsonpath='{.data.USER_PASSWORD}' | base64 -d
+# user1 / user2 share this password
+```
+
+**Pre-requisite**: `dig +short cnoe.localtest.me` must return `127.0.0.1`. The Makefile preflight enforces this since DD-38 (was Optional under DD-33).
+
+**Future cutover (Opção L)**: rebuild custom Backstage image with `@backstage/plugin-auth-backend-module-guest-provider` + `<SignInPage providers={['guest']} />` in App.tsx. Eliminates tunnel for Backstage UI access. Tracked as §15 #22.
+
 ### Accessing Backstage
 
 ```
 https://backstage.<vm-ip>.sslip.io:8443/
 ```
 
-The first time you load this, browsers will warn about the cert (Let's Encrypt + sslip.io interplay). Proceed anyway — this is a prototype.
+(login fails — use Caminho A above)
 
-Login uses Backstage guest auth (DD-33 — Keycloak OIDC is disabled and the Keycloak Deployment is scaled to zero). Click **Enter** on the guest sign-in page; no credentials required.
+The first time you load this URL via the tunnel (`https://cnoe.localtest.me:8443/`), browsers will warn about the cert. Proceed anyway — this is a prototype.
+
+Login uses Keycloak OIDC (DD-38 — DD-33 guest auth attempt reverted). Use the SSH tunnel (Caminho A above) and sign in with Keycloak `user1` or `user2` credentials from the `keycloak-config` Secret.
 
 ### Filling the form
 

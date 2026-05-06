@@ -4,6 +4,14 @@
 # the VM's external IP. Ordered multi-pass: path-suffixed patterns matched
 # before bare domain to prevent double-substitution. Called by _vm-bootstrap
 # before helmfile apply. Ref: .claude/sdd/features/DESIGN_whisperops.md §3 DD-36
+# DD-38 interaction: this script remains useful even though the operator
+# now accesses Backstage via SSH tunnel + cnoe.localtest.me path-routing.
+# It still rewrites Backstage's external sslip.io URLs for cases where
+# operators use the sslip.io endpoints to view Backstage UI without
+# triggering OIDC login (e.g., catalog browsing, quick checks). The
+# Keycloak OIDC popup will fail on those sslip.io URLs (redirect_uri
+# mismatch); use the tunnel + cnoe.localtest.me path for full OIDC flow.
+# See DESIGN §3 DD-38 for the full rationale.
 set -euo pipefail
 
 VM_IP="${1:-}"

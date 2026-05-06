@@ -54,6 +54,12 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 	gcloud storage buckets describe "gs://$$BUCKET" --format=none 2>/dev/null \
 		|| (echo "  ✗ tfstate bucket gs://$$BUCKET not found — pre-create it manually" && exit 1); \
 	echo "  ✓ tfstate bucket gs://$$BUCKET exists"
+	@RESOLVED=$$(dig +short cnoe.localtest.me 2>/dev/null | head -1); \
+	if [ "$$RESOLVED" != "127.0.0.1" ]; then \
+	    echo "  ✗ cnoe.localtest.me resolved to '$$RESOLVED' (expected 127.0.0.1) — required for SSH-tunnel access to Backstage/Keycloak (DD-38 Opção I)"; \
+	    exit 1; \
+	fi
+	@echo "  ✓ cnoe.localtest.me → 127.0.0.1"
 	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
 		|| (echo "  ✗ SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
 	@echo "  ✓ SOPS_AGE_KEY_FILE points at a readable key"
@@ -110,8 +116,9 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	bash platform/scripts/rewrite-backstage-hosts.sh "$$DERIVED_IP"; \
 	echo "→ Applying helmfile (application platform layer)"; \
 	KUBECONFIG=/root/.kube/config helmfile -f platform/helmfile.yaml.gotmpl apply; \
-	echo "→ Scaling Keycloak to 0 (DD-33)"; \
-	bash platform/values/keycloak-postrender.sh; \
+	# DD-38: Keycloak scale-to-zero disabled — Opção I keeps Keycloak active for OIDC login via tunnel. \
+	# Re-enable when Opção L (custom Backstage image with guest provider) lands. See DESIGN §15 #22. \
+	# bash platform/values/keycloak-postrender.sh \
 	echo "→ Materializing langfuse-credentials Secret"; \
 	$(MAKE) langfuse-secret; \
 	echo "→ Regenerating external Ingresses"; \

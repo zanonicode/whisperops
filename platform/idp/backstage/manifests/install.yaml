@@ -143,9 +143,12 @@ data:
       session:
         secret: MW2sV-sIPngEl26vAzatV-6VqfsgAx4bPIz7PuE_2Lk=
       providers:
-        guest:
-          dangerouslyAllowOutsideDevelopment: true
-    signInPage: guest
+        keycloak-oidc:
+          development:
+            metadataUrl: ${KEYCLOAK_NAME_METADATA}
+            clientId: backstage
+            clientSecret: ${KEYCLOAK_CLIENT_SECRET}
+            prompt: auto
 
     scaffolder:
       # see https://backstage.io/docs/features/software-templates/configuration for software template options
@@ -381,6 +384,10 @@ spec:
       remoteRef:
         key: keycloak-clients
         property: ARGOCD_SESSION_TOKEN
+    - secretKey: BACKSTAGE_CLIENT_SECRET
+      remoteRef:
+        key: keycloak-clients
+        property: BACKSTAGE_CLIENT_SECRET
   dataFrom:
     - sourceRef:
         generatorRef:
