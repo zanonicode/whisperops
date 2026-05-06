@@ -90,6 +90,18 @@ config:
       tls:
         insecure: true
 
+    # Dual-ship traces to Langfuse Cloud (US region) when the
+    # langfuse-credentials Secret is mounted. Langfuse accepts OTLP/HTTP at
+    # /api/public/otel with Basic auth (public:secret base64). The auth
+    # header is built from env vars sourced from the Secret — see extraEnvs
+    # below. If the Secret is absent the env vars are empty and the
+    # exporter still loads but every export 401s and gets dropped (debug
+    # exporter still captures locally so no data loss in Tempo).
+    otlphttp/langfuse:
+      endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
+      headers:
+        Authorization: "Basic ${env:LANGFUSE_BASIC_AUTH}"
+
   service:
     telemetry:
       logs:
@@ -98,8 +110,24 @@ config:
       traces:
         receivers: [otlp]
         processors: [k8sattributes, resource, batch]
-        exporters: [otlp/tempo, debug]
+        exporters: [otlp/tempo, otlphttp/langfuse, debug]
       # Logs and metrics pipelines deferred — first prove traces work end-to-end.
+
+# Pull Langfuse credentials into the collector pod's env. Secret name and
+# keys match what we materialize at deploy-time in the observability ns.
+extraEnvs:
+  - name: LANGFUSE_OTLP_ENDPOINT
+    valueFrom:
+      secretKeyRef:
+        name: langfuse-credentials
+        key: LANGFUSE_OTLP_ENDPOINT
+        optional: true
+  - name: LANGFUSE_BASIC_AUTH
+    valueFrom:
+      secretKeyRef:
+        name: langfuse-credentials
+        key: LANGFUSE_BASIC_AUTH
+        optional: true
 
 # k8sattributes processor needs RBAC to read pods cluster-wide.
 clusterRole:

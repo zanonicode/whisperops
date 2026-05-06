@@ -1,0 +1,35 @@
+# Grafana Infinity datasource pointing at Langfuse Cloud's public REST API.
+# Auth is HTTP Basic with public:secret keys from the langfuse-credentials
+# Secret. Once installed, the user can build panels in Grafana that query
+# e.g. https://us.cloud.langfuse.com/api/public/traces — Infinity parses
+# the JSON response and exposes it as a table source.
+#
+# DD-24 (DESIGN v1.5): the OTel collector also dual-exports traces to
+# Langfuse OTLP, so the same data appears natively in Langfuse UI AND
+# can be queried from Grafana via this datasource.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-langfuse-datasource
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  langfuse.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Langfuse
+        type: yesoreyeram-infinity-datasource
+        uid: langfuse
+        url: https://us.cloud.langfuse.com
+        access: proxy
+        basicAuth: true
+        basicAuthUser: ${LANGFUSE_PUBLIC_KEY}
+        secureJsonData:
+          basicAuthPassword: ${LANGFUSE_SECRET_KEY}
+        jsonData:
+          auth_method: "basicAuth"
+          allowedHosts:
+            - https://us.cloud.langfuse.com
+          tlsSkipVerify: false
+        editable: true

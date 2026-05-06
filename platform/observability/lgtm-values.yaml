@@ -33,6 +33,15 @@ tempo:
 # grafana_dashboard=1 (whisperops-dashboards ConfigMap from
 # observability-extras chart).
 grafana:
+  # Install the Infinity datasource plugin so Grafana can query the Langfuse
+  # public REST API (/api/public/traces, /api/public/scores, etc.) — DD-24
+  # follow-up: traces dual-ship to Langfuse via OTel; Langfuse-specific
+  # panels (cost rollups, scores) read via Infinity.
+  plugins:
+    - yesoreyeram-infinity-datasource
+  # Pull Langfuse credentials into Grafana's env so the datasource
+  # provisioning ConfigMap can ${LANGFUSE_PUBLIC_KEY} / ${LANGFUSE_SECRET_KEY}.
+  envFromSecret: langfuse-credentials
   sidecar:
     dashboards:
       enabled: true
