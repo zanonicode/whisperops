@@ -90,8 +90,12 @@ async function invoke(sessionId: string, task: string): Promise<string> {
     throw new Error(`kagent /invoke failed: HTTP ${res.status} ${text}`);
   }
   const body = (await res.json()) as { data?: InvokeMessage[]; error?: string | boolean };
-  if (body.error && body.error !== false) {
-    throw new Error(typeof body.error === 'string' ? body.error : 'kagent invoke errored');
+  const err = body.error;
+  if (typeof err === 'string') {
+    throw new Error(err);
+  }
+  if (err === true) {
+    throw new Error('kagent invoke errored');
   }
   // The data array is [user_message, ...agent_messages]. Pick the last
   // assistant TextMessage with non-empty content as the answer.
