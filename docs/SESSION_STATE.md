@@ -1,8 +1,8 @@
-# Session State — 2026-05-06
+# Session State — 2026-05-06 (late evening update)
 
-Live state of the whisperops deploy after the 2026-05-06 platform-bring-up session. Supersedes the 2026-05-05 version.
+Live state of the whisperops deploy after the 2026-05-06 sessions (platform-bring-up + Phase 2 sandbox MCP + Phase 3 demo-routing). Supersedes the earlier 2026-05-06 version of this file.
 
-> **One-paragraph TL;DR.** The platform layer is now fully deployed on the VM, the dataset-whisperer scaffolder produces a working ArgoCD app, and that app provisions real per-agent GCP resources (bucket + service account + key + IAM bindings) plus all the Kubernetes-native objects (kagent Agents, ToolServer, ModelConfigs, Kyverno Policy, Ingress). What does **not** work end-to-end is a user query reaching an agent and getting an answer, because two integration contracts named in DESIGN were never implemented: the sandbox is a FastAPI `/execute` service but kagent expects an MCP server, and the chat-frontend calls a `/v1/messages` planner endpoint that has no implementation. Everything else is solved.
+> **One-paragraph TL;DR.** The platform layer is fully deployed, the per-agent stack provisions real GCP resources end-to-end, the **sandbox MCP server is built, sideloaded, and live** in the cluster, and kagent's ToolServer **discovered the `execute_python` tool**. The **`analyst` Agent is now `Accepted=True`** (along with planner + writer). The per-agent chat URL routes to kagent's built-in UI via an ExternalName Service. Smoke-test for first end-to-end query is a browser interaction at this point, not more infra.
 
 ---
 
@@ -59,7 +59,7 @@ Three sub-providers from the Upbound family pattern (the monolithic `provider-gc
 
 ### Per-agent stack: `agent-housing-demo` (**new today**)
 
-ArgoCD app `agent-housing-demo` is **Synced/Healthy** as of session-end. All resources in the namespace:
+ArgoCD app `agent-housing-demo` is **Healthy**. All resources in the namespace:
 
 | Kind | Name | State |
 |---|---|---|
@@ -71,30 +71,81 @@ ArgoCD app `agent-housing-demo` is **Synced/Healthy** as of session-end. All res
 | ModelConfig (kagent) | model-primary, model-planner | ✓ |
 | Agent (kagent) | planner | ✓ Accepted=True |
 | Agent (kagent) | writer | ✓ Accepted=True |
-| Agent (kagent) | analyst | ⚠ Accepted=False (`tool execute_python not found in discovered tools`) |
-| ToolServer (kagent) | sandbox | ✓ Created (but unreachable — see B.1 below) |
+| Agent (kagent) | analyst | ✓ **Accepted=True** (was False; sandbox MCP server now live) |
+| ToolServer (kagent) | sandbox | ✓ **Accepted=True**, `execute_python` in `discoveredTools` |
 | Policy (kyverno) | agent-egress-policy | ✓ Ready=True |
-| Ingress | agent-housing-demo (host `agent-housing-demo.sslip.io`) | ✓ Created |
+| Service (ExternalName) | chat-frontend-housing-demo → kagent.kagent-system | ✓ Routes browser traffic at the kagent UI |
+| Ingress | agent-housing-demo (host `agent-housing-demo.sslip.io`) | ✓ |
 
-The chat-frontend ArgoCD child app (`chat-frontend-housing-demo`) is OutOfSync because no image has been built yet (Path B in §1 below).
+### Sandbox (**new today, separate from per-agent stack**)
+
+| Kind | Name | State |
+|---|---|---|
+| Namespace | sandbox | ✓ |
+| Helm release | sandbox 0.1.0 | ✓ deployed |
+| Deployment | sandbox (image `whisperops/sandbox:0.1.3`, sideloaded) | ✓ 1/1 Ready |
+| Service | sandbox:8080 | ✓ |
+| NetworkPolicy | sandbox-network-policy (ingress from kagent-system only) | ✓ |
+| MCP endpoint | `http://sandbox.sandbox.svc.cluster.local:8080/mcp` | ✓ Tools discovered by kagent |
 
 ---
 
-## What's NOT working (and why)
+## What's working end-to-end (closed today)
 
-These are not template/config bugs — they are **integration contracts named in DESIGN but never built**. They are spelled out at length in `DESIGN_whisperops.md` Reality Reconciliation Appendix §B; this is the operator-facing summary.
+### 1. Sandbox MCP server (Phase 2 — **DONE**)
 
-### 1. Sandbox MCP server doesn't exist
+`src/sandbox/app/mcp_server.py` wraps the existing FastAPI sandbox in an MCP layer using the official `mcp==1.27.0` Python SDK. Tool surface deliberately minimized to `execute_python(code: str) -> str` — pre-loads pandas + numpy + the california-housing CSV (baked into the image) as `df`. Mounted on the same uvicorn process at `/mcp`.
 
-`src/sandbox/` is a FastAPI app with `POST /execute`. kagent's ToolServer expects MCP over streamableHttp at `/mcp`. They don't speak the same protocol. **Until an MCP wrapper is written**, the analyst Agent stays Accepted=False and cannot run Python.
+**Three subtle bugs fixed during this work** (all caught and committed):
+- `mcp 1.27.0` requires `pydantic >= 2.11`; relaxed our pin from `==2.10.3` to `>=2.11.0,<3`.
+- Starlette's `app.mount()` silently drops the inner ASGI app's lifespan, so the MCP `session_manager` task group never initialized → every `/mcp` request crashed with `RuntimeError: Task group is not initialized`. Wired the MCP session manager's `run()` into FastAPI's `lifespan` context.
+- FastMCP's DNS rebinding protection rejected cluster-internal Host headers like `sandbox.sandbox.svc.cluster.local` (HTTP 421). Disabled the protection — NetworkPolicy already restricts ingress to `kagent-system`.
 
-### 2. Chat-frontend backend contract is fictional
+### 2. Per-agent chat URL → kagent built-in UI (Phase 3 — **simplified, DONE for demo**)
 
-`src/chat-frontend/app/api/chat/route.ts` calls `${PLANNER_URL}/v1/messages` (SSE). No service implements this. kagent has its own session API (`/api/v1/sessions/...`) with a different shape. **The frontend route handler must be rewritten** before the chat UI does anything useful, even if the image were built.
+DESIGN intended a custom Next.js chat-frontend per agent. The skeleton's existing `src/chat-frontend/` calls a fictional `${PLANNER_URL}/v1/messages` endpoint that kagent does not expose. **Rather than build a new chat-frontend**, the per-agent skeleton now ships an `ExternalName` Service that aliases `chat-frontend-{agent_name}` to `kagent.kagent-system.svc.cluster.local`. The Ingress targets that Service at port 80.
 
-### 3. No container registry + image pipeline
+Result: opening the per-agent URL lands the user in kagent's built-in chat UI, where they pick `agent-housing-demo/planner` from the dropdown and chat. Trade-off: the UI shows all agents in the cluster instead of being agent-scoped — acceptable for a first demo, replaced later by a purpose-built UI (NEXT_STEPS Phase 3.full).
 
-Sandbox and chat-frontend Dockerfiles exist but no images have been built or pushed. Helm charts reference `gitea.local/whisperops/sandbox:latest` (placeholder). Decisions still owed: which registry, where to build, how to authenticate. See NEXT_STEPS §3.
+### 3. Image pipeline (sideload-only, Phase 1 — **DONE for demo**)
+
+The clean registry path (Gitea container registry + containerd mirror) is still future work. **For demo purposes**, the sandbox image is built on the VM with `docker build -f src/sandbox/Dockerfile -t whisperops/sandbox:0.1.3 .` and sideloaded into kind via `docker save | docker exec localdev-control-plane ctr -n=k8s.io images import -`. `kind load docker-image` v0.25 fails against this idpbuilder cluster with "failed to detect containerd snapshotter" — the manual `ctr import` path is the workaround.
+
+This means **a fresh kind cluster will not have the sandbox image**; the build/sideload procedure must be re-run after any cluster recreate. Captured as a known-recurring bug; full registry path is NEXT_STEPS Phase 1.
+
+---
+
+## What's NOT working yet
+
+### 1. End-to-end chat smoke test (browser-only at this point)
+
+The agent runtime is verifiably wired: kagent reaches the sandbox, ToolServer discovery succeeds, Agents accept their tool refs. However the human "type a question, see an answer" loop hasn't been exercised this session — direct curl invocation of `/api/sessions/{id}/invoke` returns 422 from kagent's autogen app, which means the request body shape needs to match exactly what the kagent UI sends. Easiest test: **port-forward kagent UI and use the browser** (instructions below).
+
+### 2. Per-agent UI scoping
+
+Today, the kagent UI shows every agent in the cluster. The "operator scaffolds an agent → user gets a private chat at that URL" promise is partially delivered (the URL works) and partially not (the UI isn't agent-scoped). Phase 3.full in NEXT_STEPS.
+
+### 3. Container registry
+
+Image lives only in the kind node's containerd, sideloaded. Reproducible on a fresh cluster requires manual rebuild + sideload. Phase 1 in NEXT_STEPS.
+
+---
+
+## Smoke-test the chat (manual, browser)
+
+```bash
+# 1) Port-forward the kagent UI
+gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 8888:localhost:8888 &
+gcloud compute ssh whisperops-vm --zone=us-central1-a --command='
+  sudo kubectl --kubeconfig=/root/.kube/config -n kagent-system port-forward --address=0.0.0.0 svc/kagent 8888:80
+' &
+
+# 2) In a browser: http://localhost:8888
+# 3) Pick agent-housing-demo/planner from the dropdown
+# 4) Ask: "What is the median house price in California?"
+# 5) Watch kagent dispatch to planner → analyst (which calls sandbox.execute_python) → writer
+# 6) Verify in `kubectl logs -n sandbox -l app.kubernetes.io/name=sandbox` that the MCP tool was invoked
+```
 
 ---
 
