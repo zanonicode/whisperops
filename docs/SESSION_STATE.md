@@ -1,6 +1,8 @@
-# Session State — 2026-05-05
+# Session State — 2026-05-06
 
-Live state of the whisperops deploy, captured at end-of-session for clean continuation.
+Live state of the whisperops deploy after the 2026-05-06 platform-bring-up session. Supersedes the 2026-05-05 version.
+
+> **One-paragraph TL;DR.** The platform layer is now fully deployed on the VM, the dataset-whisperer scaffolder produces a working ArgoCD app, and that app provisions real per-agent GCP resources (bucket + service account + key + IAM bindings) plus all the Kubernetes-native objects (kagent Agents, ToolServer, ModelConfigs, Kyverno Policy, Ingress). What does **not** work end-to-end is a user query reaching an agent and getting an answer, because two integration contracts named in DESIGN were never implemented: the sandbox is a FastAPI `/execute` service but kagent expects an MCP server, and the chat-frontend calls a `/v1/messages` planner endpoint that has no implementation. Everything else is solved.
 
 ---
 
@@ -10,146 +12,153 @@ Live state of the whisperops deploy, captured at end-of-session for clean contin
 
 | Resource | State |
 |---|---|
-| GCS bucket `whisperops-tfstate` | ✓ Pre-created manually; Terraform backend uses it |
-| GCS bucket `whisperops-datasets` | ✓ Created by Terraform; populated with 3 CSVs |
+| GCS bucket `whisperops-tfstate` | ✓ |
+| GCS bucket `whisperops-datasets` | ✓ Populated with 3 CSVs |
+| GCS bucket `agent-housing-demo` | ✓ **Created today by Crossplane via Backstage scaffolder** |
 | VPC `whisperops-vpc` + subnet | ✓ |
-| GCE VM `whisperops-vm` (e2-standard-8, ubuntu-2204-lts) | ✓ Running |
-| Static external IP `136.115.224.138` | ✓ Attached to VM |
-| Bootstrap SA `whisperops-bootstrap@whisperops.iam.gserviceaccount.com` | ✓ Created with scoped IAM (CEL conditions on agent-* prefixes) |
-| Bootstrap SA key | ✓ Minted, SOPS-encrypted in `secrets/crossplane-gcp-creds.enc.yaml` |
-| Org policy `iam.disableServiceAccountKeyCreation` | ⚠️ Disabled at project level (re-enable when migrating to Workload Identity) |
+| GCE VM `whisperops-vm` (e2-standard-8, ubuntu-2204-lts) | ✓ |
+| Static external IP `136.115.224.138` | ✓ |
+| Bootstrap SA `whisperops-bootstrap@whisperops.iam.gserviceaccount.com` | ✓ Re-bound today: `iam.serviceAccountAdmin`, `iam.serviceAccountKeyAdmin`, `resourcemanager.projectIamAdmin`, `storage.admin` — all **unconditional** (see "IAM model correction" below) |
+| GCP service account `agent-housing-demo@whisperops...` | ✓ **Created today by Crossplane** |
+| Service account key (live in GCP IAM) | ✓ **Minted today** — connection-secret materialized as `gcp-sa-key` Secret in agent-housing-demo namespace |
+| ProjectIAMMembers (object-admin on agent bucket; object-viewer on shared datasets) | ✓ |
 
-### IDP layer (running on the VM via idpbuilder)
+### IDP layer (idpbuilder, on the VM)
 
-| Component | State | URL (via SSH tunnel `gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 8443:localhost:8443`) |
-|---|---|---|
-| kind cluster `localdev` | ✓ Running | — |
-| ArgoCD | ✓ Healthy | https://cnoe.localtest.me:8443/argocd |
-| Gitea | ✓ Healthy | https://cnoe.localtest.me:8443/gitea |
-| Backstage | ✓ Healthy | https://cnoe.localtest.me:8443/ |
-| Keycloak | ✓ Healthy | https://cnoe.localtest.me:8443/keycloak |
-| ESO (external-secrets) | ✓ Healthy | — |
-| argo-workflows | ✓ Healthy | https://cnoe.localtest.me:8443/argo-workflows |
-| metric-server | ✓ Healthy | — |
-| spark-operator | ✓ Running (unused — bundled by ref-implementation) | — |
+Same as 2026-05-05 — all CNOE ref-implementation apps Synced/Healthy:
 
-### Backstage scaffolder
-
-| Step | State |
+| Component | State |
 |---|---|
-| Dataset Whisperer template registered | ✓ |
-| Form fields working | ✓ (manually tested with `housing-demo`) |
-| `fetch:template` rendering | ✓ (after `${{...}}` syntax fix) |
-| `publish:gitea` | ✓ Creates per-agent Gitea repo |
-| `cnoe:create-argocd-app` | ✓ Wired; not exercised in this session |
+| kind cluster `localdev` | ✓ |
+| ArgoCD, Gitea, Backstage, Keycloak | ✓ |
+| ESO, argo-workflows, metric-server, nginx, spark-operator | ✓ |
 
-### Per-agent state (housing-demo)
+### Application platform layer (helmfile, **new today**)
 
-- Gitea repo `giteaAdmin/agent-housing-demo` exists with 15 rendered manifests
-- ArgoCD `Application/agent-housing-demo` exists, **OutOfSync** because cluster lacks platform-layer CRDs
+Deployed via `helmfile -f platform/helmfile.yaml.gotmpl sync` on the VM:
 
----
+| Helm release | Namespace | Version | State |
+|---|---|---|---|
+| crossplane | crossplane-system | 1.17.1 | ✓ Healthy |
+| kagent-crds | kagent-system | 0.4.3 | ✓ |
+| kagent | kagent-system | 0.4.3 | ✓ Healthy (5/5 containers after `kagent-openai` Secret created) |
+| kyverno | kyverno | 3.2.6 | ✓ |
+| lgtm-distributed | observability | 2.1.0 | ✓ |
+| opentelemetry-collector | observability | 0.104.0 | ✓ |
 
-## What's blocking the demo
+### Crossplane providers (**new today**)
 
-**The application platform layer is not deployed.** The Backstage scaffolder generates manifests that reference CRDs the cluster doesn't have:
+Three sub-providers from the Upbound family pattern (the monolithic `provider-gcp` that DESIGN named was retired from xpkg.upbound.io):
 
-| CRD missing | Owned by | Helm chart we have |
+| Provider | Version | State |
 |---|---|---|
-| `kagent.dev/Agent` | kagent operator | DESIGN §4.5 expected ArgoCD App `kagent` |
-| `cloudplatform.gcp.upbound.io/*`, `storage.gcp.upbound.io/Bucket`, `iam.gcp.upbound.io/*` | Crossplane provider-gcp | DESIGN §4.6 has provider config but provider not installed |
-| `kyverno.io/Policy` | Kyverno | `platform/helm/kyverno-policies/` exists but not deployed |
+| upbound/provider-gcp-storage | v1.9.4 | ✓ Healthy |
+| upbound/provider-gcp-iam | v1.9.4 | ✓ Healthy |
+| upbound/provider-gcp-cloudplatform | v1.9.4 | ✓ Healthy |
+| upbound/provider-family-gcp | (auto, dependency) | ✓ Healthy |
 
-The CNOE ref-implementation gave us the IDP layer. Our DESIGN §4.5 platform Helm charts (sandbox, chat-frontend, kyverno-policies, observability-extras, agent-prompts, budget-controller, platform-bootstrap-job) and the upstream charts they depend on (kagent, Crossplane, Kyverno) need to be deployed before any agent can actually run.
+### Per-agent stack: `agent-housing-demo` (**new today**)
 
----
+ArgoCD app `agent-housing-demo` is **Synced/Healthy** as of session-end. All resources in the namespace:
 
-## Exact next steps (next session)
+| Kind | Name | State |
+|---|---|---|
+| Namespace | agent-housing-demo | ✓ |
+| ServiceAccount (Crossplane) | agent-housing-demo | ✓ Synced/Ready in GCP |
+| ServiceAccountKey (Crossplane) | agent-housing-demo-key | ✓ Synced/Ready (real key in IAM, secret materialized) |
+| Bucket (Crossplane) | agent-housing-demo | ✓ Synced/Ready (real GCS bucket) |
+| ProjectIAMMember × 2 | bucket-admin, datasets-viewer | ✓ Synced/Ready |
+| ModelConfig (kagent) | model-primary, model-planner | ✓ |
+| Agent (kagent) | planner | ✓ Accepted=True |
+| Agent (kagent) | writer | ✓ Accepted=True |
+| Agent (kagent) | analyst | ⚠ Accepted=False (`tool execute_python not found in discovered tools`) |
+| ToolServer (kagent) | sandbox | ✓ Created (but unreachable — see B.1 below) |
+| Policy (kyverno) | agent-egress-policy | ✓ Ready=True |
+| Ingress | agent-housing-demo (host `agent-housing-demo.sslip.io`) | ✓ Created |
 
-### Step 1 — Install the missing operators
-
-Three options, in order of correctness:
-
-**Option A — Use our `platform/helmfile.yaml.gotmpl`** (the DESIGN intent)
-
-```bash
-gcloud compute ssh whisperops-vm --zone=us-central1-a
-# (on VM)
-sudo apt-get install -y helm helmfile  # or pull binaries directly
-git clone https://github.com/zanonicode/whisperops /tmp/whisperops
-cd /tmp/whisperops
-sudo helmfile -f platform/helmfile.yaml.gotmpl --kubeconfig /root/.kube/config sync
-```
-
-This brings up: kagent + Crossplane + Crossplane provider-gcp + Kyverno + LGTM + OTel Collector + ArgoCD root-app pointing at `platform/argocd/applications/`. Each may surface its own bootstrap quirks (similar in flavor to today's Keycloak config-job debug); budget ~1–2 hr.
-
-**Option B — Add the missing operators as idpbuilder packages**
-
-Drop our `platform/argocd/applications/*.yaml` into a new `platform/idp-extras/` directory and re-run `idpbuilder create -p ...` against it. Cleaner than a separate helmfile but requires that the upstream charts work as ArgoCD Applications in the CNOE pattern.
-
-**Option C — Install only the bare minimum to deploy `chat-frontend`**
-
-The chat-frontend manifest in the agent's Gitea repo is plain Kubernetes (Deployment + Service + Ingress) — no CRDs needed. Tell ArgoCD to ignore the rest temporarily. Demo shows "scaffold an agent → see a chat UI come up" without the LLM actually working. Useful as a visual checkpoint but no real demo value beyond that.
-
-### Step 2 — Re-sync the agent ArgoCD app
-
-Once CRDs are present:
-
-```bash
-sudo kubectl --kubeconfig=/root/.kube/config -n argocd patch application agent-housing-demo \
-  --type=merge -p '{"operation":{"sync":{}}}'
-```
-
-Watch the namespace come up:
-
-```bash
-sudo kubectl --kubeconfig=/root/.kube/config get all -n agent-housing-demo --watch
-```
-
-### Step 3 — Wire SOPS-decrypted secrets into the cluster
-
-Crossplane needs `crossplane-gcp-creds.enc.yaml` decrypted as a K8s Secret in `crossplane-system`. The DESIGN had `platform/crossplane/external-secret-bootstrap.yaml` for this — but ESO needs the SOPS-decrypted plaintext somewhere it can read. Two paths:
-
-- Run `sops -d secrets/crossplane-gcp-creds.enc.yaml | kubectl apply -f -` once after cluster bring-up
-- Or wire SOPS-into-ESO (more work)
-
-For demo: manual decrypt + kubectl apply is fine.
-
-### Step 4 — End-to-end test
-
-1. Visit `https://agent-housing-demo.<vm-ip>.sslip.io` (chat UI)
-2. Ask a question: *"What's the median house price in California by latitude?"*
-3. Watch traces in Grafana → Tempo
-4. Verify chart renders and is signed-URL'd from per-agent bucket
+The chat-frontend ArgoCD child app (`chat-frontend-housing-demo`) is OutOfSync because no image has been built yet (Path B in §1 below).
 
 ---
 
-## Bugs fixed this session (committed; won't recur)
+## What's NOT working (and why)
 
-| Bug | Commit |
+These are not template/config bugs — they are **integration contracts named in DESIGN but never built**. They are spelled out at length in `DESIGN_whisperops.md` Reality Reconciliation Appendix §B; this is the operator-facing summary.
+
+### 1. Sandbox MCP server doesn't exist
+
+`src/sandbox/` is a FastAPI app with `POST /execute`. kagent's ToolServer expects MCP over streamableHttp at `/mcp`. They don't speak the same protocol. **Until an MCP wrapper is written**, the analyst Agent stays Accepted=False and cannot run Python.
+
+### 2. Chat-frontend backend contract is fictional
+
+`src/chat-frontend/app/api/chat/route.ts` calls `${PLANNER_URL}/v1/messages` (SSE). No service implements this. kagent has its own session API (`/api/v1/sessions/...`) with a different shape. **The frontend route handler must be rewritten** before the chat UI does anything useful, even if the image were built.
+
+### 3. No container registry + image pipeline
+
+Sandbox and chat-frontend Dockerfiles exist but no images have been built or pushed. Helm charts reference `gitea.local/whisperops/sandbox:latest` (placeholder). Decisions still owed: which registry, where to build, how to authenticate. See NEXT_STEPS §3.
+
+---
+
+## Bugs fixed today (committed; won't recur)
+
+All in commit `0b91787` ("fix(platform,scaffolder): reconcile DESIGN-time templates with shipped CRD schemas") and live on `main`.
+
+### Platform helmfile
+
+| Bug | Fix |
 |---|---|
-| Terraform orphan `state_bucket_name` variable | `849774e` |
-| `tfstate_bucket` chicken-and-egg in storage module | `ed1e98e` |
-| `access_config` on wrong VM submodule (no public IP) | `<sha>` |
-| idpbuilder v0.9.0 (404) → v0.10.2 with tar.gz unpack | `<sha>` |
-| idpbuilder package URL `//backstage` → `//ref-implementation` | `<sha>` |
-| Missing `kubectl` install in startup script | `<sha>` |
-| Phantom OTel version pins (1.28.4 → 1.28.2) | `<sha>` |
-| Missing chat-frontend `app/layout.tsx`, `globals.css`, `postcss.config.mjs`, `public/` | `<sha>` |
-| Next 15.0.3 → 15.5.15 (peer dep) | `<sha>` |
-| Vendored CNOE ref-implementation; patched Keycloak config-job URL bug | `60f972b` |
-| Wait gate in startup script (poll until all apps Synced/Healthy) | `60f972b` |
-| `make preflight` target | `60f972b` |
-| Backstage `${{values.X}}` syntax (was bare Nunjucks `{{...}}`) | `277ee41` |
-| Scaffolder action mismatch (`generate-suffix` removed; CNOE `cnoe:create-argocd-app` used) | `99600e2` |
+| `charts.kagent.dev` doesn't resolve | Use `oci://ghcr.io/kagent-dev/kagent/helm/kagent` |
+| kagent install fails: "ensure CRDs are installed first" | Install `kagent-crds` chart **first**, then `kagent` |
+| kagent install fails: "namespace 'kagent' not found" | Pre-create the `kagent` namespace (the chart targets two namespaces: `kagent-system` and `kagent`) |
+| OTel collector fails: "image.repository must be set" | v0.104.0+ requires explicit `mode: deployment` + `image.repository: otel/opentelemetry-collector-contrib` |
+| `argocd-root-app` release collides with CNOE ArgoCD | Release dropped from helmfile |
+
+### Crossplane
+
+| Bug | Fix |
+|---|---|
+| `upbound/provider-gcp:v0.42.0` retired from xpkg | Switch to family pattern: `provider-gcp-storage` + `provider-gcp-iam` + `provider-gcp-cloudplatform` at v1.9.4 |
+| ProviderConfig `projectID: ""` | Set to `whisperops` |
+| Crossplane GCP credential Secret rejected: "invalid character '\\n' in string literal" | Decrypted SOPS YAML had real newlines inside the `private_key` JSON value. Repaired by parsing leniently and re-emitting with `\n` escapes (see `docs/runbooks/sops-gcp-creds-repair.md` if/when written; for now follow the procedure in NEXT_STEPS §0) |
+
+### Backstage skeleton templates (all in `backstage-templates/dataset-whisperer/skeleton/`)
+
+| Bug | Fix |
+|---|---|
+| Agent `apiVersion: kagent.dev/v1` rejected | Use `v1alpha1` (only version shipped through 0.7.9) |
+| Agent `spec.model` rejected | Use `spec.modelConfig: <ref>` + new `ModelConfig` CR (added two: `modelconfig-primary.yaml.njk`, `modelconfig-planner.yaml.njk`) |
+| Agent `spec.systemPromptConfigMapRef` rejected | Use inline `spec.systemMessage` |
+| Agent `spec.tools[].name/toolServer/toolServerNamespace` rejected | Use `spec.tools[].type=McpServer` + `mcpServer.{toolServer, toolNames}` |
+| Agent `spec.observability` rejected | Field doesn't exist in the CRD; per-agent OTel tagging deferred |
+| ToolServer `spec.transport` rejected | Use `spec.config.streamableHttp.url` |
+| ServiceAccountKey `serviceAccountRef` rejected | Use `serviceAccountIdRef` |
+| Bucket creation: org policy `storage.uniformBucketLevelAccess` violation | Add `forProvider.uniformBucketLevelAccess: true` |
+| ProjectIAMMember "for project ''" 403 | Add `forProvider.project: ${{ values.project_id }}` |
+| Kyverno policy: "variable substitution failed: variable `null`" | Replaced nested-template `{{ \`{{request.object.metadata.name}}\` }}` with a `validate.pattern` form (no variables) |
+| ExternalSecret references non-existent `cluster-secret-store` and Password generator | Manifest deleted entirely; the real key flow is `ServiceAccountKey.spec.writeConnectionSecretToRef` |
+
+### IAM model correction
+
+| Bug | Fix |
+|---|---|
+| Bootstrap SA conditional bindings always fail on `create` operations because `resource.name` is empty at create-time (a known GCP IAM Conditions limitation, not a typo) | Conditions removed from `roles/iam.serviceAccountAdmin` and `roles/iam.serviceAccountKeyAdmin`. Naming convention now enforced **only at the template level** (`metadata.name: agent-${{ values.agent_name }}`). |
+| ProjectIAMMember reconcile fails with "permission denied retrieving IAM policy" | Added `roles/resourcemanager.projectIamAdmin` (no condition) to the bootstrap SA |
+| `kagent` pod 4/5 with `CreateContainerConfigError` (querydoc sidecar) | Created `kagent-openai` Secret in `kagent-system` from SOPS-decrypted `secrets/openai.enc.yaml` |
+
+### Skeleton + iam-bindings: project_id / values.X fully resolved
+
+The Backstage scaffolder template now correctly substitutes `${{ values.project_id }}`, `${{ values.region | default('US-CENTRAL1') }}`, and `${{ values.base_domain | default('sslip.io') }}` in all rendered files (verified via local sed-render against the Gitea repo). No remaining placeholder leakage.
 
 ---
 
-## Bugs NOT fixed (recurring on fresh deploy)
+## Bugs NOT fixed (recurring on fresh deploy — operator must handle)
 
-1. **Keycloak config-job retry idempotency** — even with our URL fix, if the script crashes between realm-creation and secret-creation, the next run sees the realm and exits 0 without creating the secret. Manual recovery: delete the keycloak namespace + force resync. Should patch the upstream check to verify both realm AND secret.
+1. **CNOE Keycloak config-job idempotency** — same as 2026-05-05. If the job crashes between realm-creation and secret-creation, the next run sees the realm and exits 0 without creating the secret. Manual recovery: delete the keycloak namespace + force resync.
 
-2. **ArgoCD sync ordering deadlocks** — ArgoCD sometimes creates Deployments before required ConfigMaps. Force-sync via `syncOptions=[Replace=true,Force=true]` recovers.
+2. **kagent installation ordering** — the Helm chart fails on first install unless the `kagent` namespace pre-exists and the `kagent-crds` chart is installed first. Captured in NEXT_STEPS §0.4.
+
+3. **SOPS-decrypted JSON key newline corruption** — the encrypted GCP credential file in `secrets/crossplane-gcp-creds.enc.yaml` decrypts to malformed JSON (real newlines inside the private_key string). The bootstrap procedure must include a Python-based repair pass before applying to Kubernetes. Captured in NEXT_STEPS §0.6.
+
+4. **GCP IAM propagation delay** — bootstrapping the bootstrap SA's role bindings, then immediately running ArgoCD sync, results in 403s for ~60-90 seconds while IAM converges. Operator must wait or expect retries.
 
 ---
 
@@ -159,17 +168,43 @@ For demo: manual decrypt + kubectl apply is fine.
 # SSH tunnel for browser access
 gcloud compute ssh whisperops-vm --zone=us-central1-a -- -L 8443:localhost:8443
 
-# Pull all credentials at once
+# Pull all credentials
 gcloud compute ssh whisperops-vm --zone=us-central1-a --command='
   echo "=== ArgoCD ==="; sudo kubectl --kubeconfig=/root/.kube/config -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-  echo "=== Gitea ==="; sudo /usr/local/bin/idpbuilder get secrets -p gitea | grep -A 1 PASSWORD
+  echo "=== Gitea token ==="; sudo kubectl --kubeconfig=/root/.kube/config -n gitea get secret gitea-credential -o jsonpath="{.data.token}" | base64 -d; echo
   echo "=== Keycloak admin ==="; sudo kubectl --kubeconfig=/root/.kube/config -n keycloak get secret keycloak-config -o jsonpath="{.data.KEYCLOAK_ADMIN_PASSWORD}" | base64 -d; echo
-  echo "=== Keycloak user1 ==="; sudo kubectl --kubeconfig=/root/.kube/config -n keycloak get secret keycloak-config -o jsonpath="{.data.USER_PASSWORD}" | base64 -d; echo
 '
 
 # All ArgoCD apps health
 gcloud compute ssh whisperops-vm --zone=us-central1-a --command='sudo kubectl --kubeconfig=/root/.kube/config get apps -A'
 
-# Tear down (when done with demo)
+# All Crossplane providers / managed resources
+gcloud compute ssh whisperops-vm --zone=us-central1-a --command='sudo kubectl --kubeconfig=/root/.kube/config get providers.pkg.crossplane.io,managed -A'
+
+# Force re-sync agent-housing-demo
+gcloud compute ssh whisperops-vm --zone=us-central1-a --command='
+  sudo kubectl --kubeconfig=/root/.kube/config -n argocd patch app agent-housing-demo \
+    --type=merge -p "{\"operation\":{\"sync\":{}}}"
+'
+
+# Tear down all per-agent infra (when iterating)
+gcloud compute ssh whisperops-vm --zone=us-central1-a --command='
+  sudo kubectl --kubeconfig=/root/.kube/config -n argocd delete app agent-housing-demo --cascade=foreground
+  # Then delete the Gitea repo via API and re-scaffold from Backstage
+'
+
+# Tear down everything (full destroy)
 make destroy
 ```
+
+---
+
+## Where to look for what
+
+| Question | Where to look |
+|---|---|
+| What's the next thing to build? | `docs/NEXT_STEPS.md` |
+| Why does X fail / what was the root cause? | `.claude/sdd/features/DESIGN_whisperops.md` Reality Reconciliation Appendix |
+| What does the user-facing behavior look like? | `.claude/sdd/features/DEFINE_whisperops.md` |
+| What's the platform install order? | `docs/NEXT_STEPS.md` §0 (clean-room reproduce) |
+| Where's the AGE key for SOPS? | `age.key` (gitignored, on the operator's workstation) |
