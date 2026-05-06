@@ -1,6 +1,6 @@
 output "vm_external_ip" {
-  description = "Static external IP address of the whisperops GCE VM."
-  value       = google_compute_address.static_ip.address
+  description = "External NAT IP currently assigned to whisperops-vm by GCP. May differ from google_compute_address.static_ip.address if GCP assigned ephemeral NAT — see DD-39."
+  value       = data.google_compute_instance.vm.network_interface[0].access_config[0].nat_ip
 }
 
 output "datasets_bucket_name" {

@@ -12,24 +12,29 @@
 # Keycloak OIDC popup will fail on those sslip.io URLs (redirect_uri
 # mismatch); use the tunnel + cnoe.localtest.me path for full OIDC flow.
 # See DESIGN §3 DD-38 for the full rationale.
+# DD-39: usage: rewrite-backstage-hosts.sh <VM_IP> [TARGET_FILE]
+# TARGET_FILE defaults to platform/idp/backstage/manifests/install.yaml
+# relative to the repo root. Pass an explicit path for testing.
 set -euo pipefail
 
 VM_IP="${1:-}"
 
 if [[ -z "$VM_IP" ]] || [[ ! "$VM_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-  echo "ERROR: usage: $0 <VM_IP>  (must be a dotted IPv4 address)" >&2
+  echo "ERROR: usage: $0 <VM_IP> [TARGET_FILE]  (VM_IP must be a dotted IPv4 address)" >&2
   exit 1
 fi
 
-INSTALL_YAML="$(cd "$(dirname "$0")/../.." && pwd)/platform/idp/backstage/manifests/install.yaml"
+TARGET_FILE="${2:-$(cd "$(dirname "$0")/../.." && pwd)/platform/idp/backstage/manifests/install.yaml}"
 
-if [[ ! -f "$INSTALL_YAML" ]]; then
-  echo "ERROR: file not found: $INSTALL_YAML" >&2
+if [[ ! -f "$TARGET_FILE" ]]; then
+  echo "ERROR: target file not found: $TARGET_FILE" >&2
   exit 1
 fi
+
+INSTALL_YAML="$TARGET_FILE"
 
 # Count occurrences before rewriting (for idempotency reporting).
-BEFORE=$(grep -o 'cnoe\.localtest\.me' "$INSTALL_YAML" | wc -l | tr -d ' ')
+BEFORE=$({ grep -o 'cnoe\.localtest\.me' "$INSTALL_YAML" || true; } | wc -l | tr -d ' ')
 
 # Pass 1: cnoe.localtest.me:8443/gitea → gitea.<IP>.sslip.io:8443
 sed -i.bak "s|cnoe\.localtest\.me:8443/gitea|gitea.${VM_IP}.sslip.io:8443|g" "$INSTALL_YAML" && rm -f "${INSTALL_YAML}.bak"
@@ -49,7 +54,7 @@ sed -i.bak "s|cnoe\.localtest\.me/gitea|gitea.${VM_IP}.sslip.io:8443|g" "$INSTAL
 # Pass 6: cnoe.localtest.me (remaining bare) → backstage.<IP>.sslip.io:8443
 sed -i.bak "s|cnoe\.localtest\.me|backstage.${VM_IP}.sslip.io:8443|g" "$INSTALL_YAML" && rm -f "${INSTALL_YAML}.bak"
 
-AFTER=$(grep -o 'cnoe\.localtest\.me' "$INSTALL_YAML" | wc -l | tr -d ' ')
+AFTER=$({ grep -o 'cnoe\.localtest\.me' "$INSTALL_YAML" || true; } | wc -l | tr -d ' ')
 N=$(( BEFORE - AFTER ))
 
 echo "Rewrote ${N} occurrences in install.yaml"

@@ -26,7 +26,7 @@ Verify each before Stage 0. Most are checked by `make preflight`.
 | `secrets/*.enc.yaml` present and SOPS-encrypted (anthropic, openai, supabase, langfuse, crossplane-gcp-creds) | Yes | `grep -l '^sops:' secrets/*.enc.yaml \| wc -l` → 5 |
 | `terraform.tfvars` and `backend.tfvars` customised (no `YOUR_GCP_PROJECT_ID` placeholders) | Yes | `make preflight` |
 | Tooling on local machine: `terraform>=1.7`, `gcloud`, `age`, `sops`, `kubectl>=1.29`, `helm>=3.14`, `helmfile>=0.163`, `make`, `node>=20`, `python3.12`, `yq` (DD-31), `jq` | Yes | `which yq jq` |
-| `cnoe.localtest.me` resolves to `127.0.0.1` (only matters when port-forwarding from the VM; sslip.io URLs avoid this) | Optional | `dig +short cnoe.localtest.me` |
+| `cnoe.localtest.me` resolves to `127.0.0.1` (mandatory since DD-38 — required for SSH-tunnel access to Keycloak/Backstage) | Yes | `dig +short cnoe.localtest.me` |
 | Local clock not skewed (SOPS will refuse decrypts otherwise) | Yes | `sudo systemctl status systemd-timesyncd` (Linux) / `sntp -sS time.apple.com` (macOS) |
 
 To decrypt a secret to its plaintext sibling for inspection (gitignored):
@@ -112,12 +112,7 @@ make copy-repo && make deploy-vm
 7. Updates the `platform-config` ConfigMap with `base_domain` and `registry_url`
 8. Runs the platform-bootstrap Job (`make platform-bootstrap`)
 
-Open the firewall before running `deploy-vm` if this is the first bring-up for this VM:
-
-```bash
-gcloud compute firewall-rules create allow-kind-ingress \
-  --allow=tcp:8443 --target-tags=whisperops-vm
-```
+The firewall rule `allow-kind-ingress` (TCP/8443) is now Terraform-managed (DD-39). It is created automatically by `make tf-apply`.
 
 After `deploy-vm` completes, proceed to Stage 5 (secrets materialization) on your local workstation.
 
@@ -238,14 +233,12 @@ The three curated CSVs ship with the repo. Any additional dataset must be added 
 The CNOE NGINX ingress maps host `:8443` to kind container `:443`. Use sslip.io for wildcard DNS that requires no DNS configuration.
 
 ```bash
-# Open the firewall (one-time per VM)
-gcloud compute firewall-rules create allow-kind-ingress \
-  --allow=tcp:8443 --target-tags=whisperops-vm
-
 # Generate Ingress manifests for the current VM IP and apply
-VM_IP=$(terraform -chdir=terraform output -raw vm_external_ip)
+VM_IP=$(terraform -chdir=terraform output -raw vm_external_ip)  # DD-39: now returns the VM's live NAT IP
 make external-ingresses VM_IP=$VM_IP
 ```
+
+The firewall rule `allow-kind-ingress` (TCP/8443) is now Terraform-managed (DD-39). It is created automatically by `make tf-apply`.
 
 This produces five Ingress objects (Backstage, ArgoCD, Gitea, Grafana, plus the agent-housing-demo example) under `https://<svc>.<vm-ip>.sslip.io:8443/`.
 

@@ -65,6 +65,18 @@ module "network" {
         },
       ]
     },
+    {
+      name          = "allow-kind-ingress"
+      description   = "Allow inbound traffic to NGINX-Ingress on port 8443 (DD-23). Required for sslip.io external access."
+      source_ranges = ["0.0.0.0/0"]
+      target_tags   = ["whisperops-vm"]
+      allow = [
+        {
+          protocol = "tcp"
+          ports    = ["8443"]
+        },
+      ]
+    },
   ]
 }
 
@@ -235,4 +247,15 @@ module "vm" {
   deletion_protection = false
 
   static_ips = [google_compute_address.static_ip.address]
+}
+
+# DD-39: Query the live VM to get its actual NAT IP. The instance_template
+# access_config sets nat_ip = static_ip.address, but compute_instance silently
+# ignores static_ips when the template already defines the NIC. The data source
+# reflects whatever IP GCP has actually assigned.
+data "google_compute_instance" "vm" {
+  project    = var.project_id
+  zone       = var.zone
+  name       = "whisperops-vm"
+  depends_on = [module.vm]
 }
