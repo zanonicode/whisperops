@@ -71,6 +71,7 @@ Decision pointers worth knowing up front:
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | **Operator handbook** — full stage-by-stage deploy, Backstage agent flow, observability navigation. Start here. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture — components, request flow, trust boundaries |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security model — isolation, secrets, residual risks |
+| [`docs/SECRETS.md`](docs/SECRETS.md) | **SOPS + age guide** — generate your own `age.key`, build each `secrets/*.enc.yaml` from your own credentials, materialization order |
 | [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md) | _Superseded by OPERATIONS.md §3._ Kept for historical context. |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | _Superseded by OPERATIONS.md §1._ Kept for historical context. |
 | [`docs/NEXT_STEPS.md`](docs/NEXT_STEPS.md) | _Current open items live in DESIGN §15._ Roadmap remains useful. |

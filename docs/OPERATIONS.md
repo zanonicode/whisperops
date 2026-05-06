@@ -135,6 +135,8 @@ kubectl --kubeconfig=/root/.kube/config get providers.pkg.crossplane.io
 
 Run from your **local workstation** (where SOPS has the age key), not the VM. `kubectl` here uses your local kubeconfig pointing at the VM cluster — set up an SSH tunnel or scp `~/.kube/config` from `/tmp/whisperops/` first.
 
+> **Bringing your own credentials?** See [docs/SECRETS.md](SECRETS.md) for how to generate an `age.key`, point `.sops.yaml` at it, and rebuild each `secrets/*.enc.yaml` from your own Anthropic / OpenAI / Langfuse / GCP / Supabase keys before running the steps below.
+
 #### 5a — Crossplane GCP credentials (must be first; providers can't reconcile without it)
 
 ```bash
