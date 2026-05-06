@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -10,7 +11,17 @@ from .mcp_server import mcp
 from .observability import logger, tracer
 from .schemas import ExecuteRequest, ExecuteResponse
 
-app = FastAPI(title="Sandbox", version="0.1.0")
+
+# Wire the MCP session manager's lifespan into FastAPI's. Without this,
+# Starlette's app.mount() drops the inner app's lifespan events and the
+# MCP server crashes per-request with "Task group is not initialized".
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    async with mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title="Sandbox", version="0.1.0", lifespan=lifespan)
 FastAPIInstrumentor.instrument_app(app)
 
 # Mount the MCP streamable-HTTP server at /mcp.
