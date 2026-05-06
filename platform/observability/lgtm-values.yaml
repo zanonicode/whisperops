@@ -1,5 +1,6 @@
 # lgtm-distributed values overrides for whisperops.
 # Enables Tempo OTLP ingest so the OTel Collector can ship traces to it.
+# Disables anti-affinity / spread (single-node kind cluster).
 tempo:
   traces:
     otlp:
@@ -7,3 +8,18 @@ tempo:
         enabled: true
       http:
         enabled: true
+  distributor:
+    affinity: {}
+    topologySpreadConstraints: []
+  ingester:
+    affinity: {}
+    topologySpreadConstraints: []
+  querier:
+    affinity: {}
+    topologySpreadConstraints: []
+  queryFrontend:
+    affinity: {}
+    topologySpreadConstraints: []
+  compactor:
+    affinity: {}
+    topologySpreadConstraints: []
