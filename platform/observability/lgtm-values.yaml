@@ -1,0 +1,9 @@
+# lgtm-distributed values overrides for whisperops.
+# Enables Tempo OTLP ingest so the OTel Collector can ship traces to it.
+tempo:
+  traces:
+    otlp:
+      grpc:
+        enabled: true
+      http:
+        enabled: true

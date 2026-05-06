@@ -1,0 +1,111 @@
+# OpenTelemetry Collector pipeline for whisperops.
+#
+# Receives OTLP from chat-frontend (Node), sandbox (FastAPI), and any
+# future agent-side instrumentation. Pipes traces -> Tempo, logs -> Loki,
+# metrics -> Mimir.
+#
+# Per-agent attribution is added by the resource processor based on the
+# pod's namespace label `whisperops.io/agent`. Spans coming from any
+# pod in an agent-* namespace get the `agent.id` resource attribute.
+mode: deployment
+image:
+  repository: otel/opentelemetry-collector-contrib
+
+# Open the OTLP endpoint cluster-wide (default behavior, but explicit).
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+          cors:
+            # Browser OTel sender (chat-frontend page) ships traces over CORS.
+            allowed_origins:
+              - "*"
+
+  processors:
+    batch:
+      timeout: 5s
+      send_batch_size: 512
+    # Pull pod labels into resource attributes — k8s.pod.labels.* will
+    # carry our `whisperops.io/agent` and `whisperops.io/role`.
+    k8sattributes:
+      auth_type: serviceAccount
+      passthrough: false
+      extract:
+        metadata:
+          - k8s.namespace.name
+          - k8s.pod.name
+          - k8s.pod.uid
+          - k8s.deployment.name
+        labels:
+          - tag_name: agent.id
+            key: whisperops.io/agent
+            from: pod
+          - tag_name: agent.role
+            key: whisperops.io/role
+            from: pod
+      pod_association:
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.ip
+        - sources:
+            - from: resource_attribute
+              name: k8s.pod.name
+        - sources:
+            - from: connection
+    resource:
+      attributes:
+        - action: upsert
+          key: deployment.environment
+          value: dev
+
+  exporters:
+    debug:
+      verbosity: basic
+    otlphttp/tempo:
+      endpoint: http://lgtm-distributed-tempo-distributor.observability.svc.cluster.local:4318
+      tls:
+        insecure: true
+
+  service:
+    telemetry:
+      logs:
+        level: info
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [k8sattributes, resource, batch]
+        exporters: [otlphttp/tempo, debug]
+      # Logs and metrics pipelines deferred — first prove traces work end-to-end.
+
+# k8sattributes processor needs RBAC to read pods cluster-wide.
+clusterRole:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "namespaces"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apps"]
+      resources: ["replicasets", "deployments"]
+      verbs: ["get", "list", "watch"]
+
+serviceAccount:
+  create: true
+
+# Send the chart's default 'metrics' pipeline (which scrapes the collector
+# itself) to debug only — Mimir wiring is a separate task.
