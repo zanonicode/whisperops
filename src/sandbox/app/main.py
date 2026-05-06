@@ -6,11 +6,16 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .artifact_upload import upload_artifacts
 from .credentials import scoped_credentials
 from .execution import run_in_subprocess
+from .mcp_server import mcp
 from .observability import logger, tracer
 from .schemas import ExecuteRequest, ExecuteResponse
 
 app = FastAPI(title="Sandbox", version="0.1.0")
 FastAPIInstrumentor.instrument_app(app)
+
+# Mount the MCP streamable-HTTP server at /mcp.
+# kagent ToolServer.spec.config.streamableHttp.url points here.
+app.mount("/mcp", mcp.streamable_http_app())
 
 
 @app.get("/healthz")

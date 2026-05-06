@@ -16,6 +16,7 @@ dependencies = [
     "opentelemetry-sdk==1.28.2",
     "opentelemetry-instrumentation-fastapi==0.49b2",
     "opentelemetry-exporter-otlp-proto-grpc==1.28.2",
+    "mcp==1.27.0",
 ]
 
 [project.optional-dependencies]

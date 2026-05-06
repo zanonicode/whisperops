@@ -1,10 +1,12 @@
+# Build context: repository root.
+# Build command: `docker buildx build -f src/sandbox/Dockerfile -t <tag> --platform=linux/amd64 .`
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
 RUN pip install --upgrade pip hatchling
 
-COPY pyproject.toml .
+COPY src/sandbox/pyproject.toml .
 RUN pip install --no-cache-dir \
     fastapi==0.115.5 \
     uvicorn[standard]==0.32.1 \
@@ -13,7 +15,8 @@ RUN pip install --no-cache-dir \
     opentelemetry-api==1.28.2 \
     opentelemetry-sdk==1.28.2 \
     opentelemetry-instrumentation-fastapi==0.49b2 \
-    opentelemetry-exporter-otlp-proto-grpc==1.28.2
+    opentelemetry-exporter-otlp-proto-grpc==1.28.2 \
+    mcp==1.27.0
 
 RUN pip install --no-cache-dir \
     pandas==2.2.3 \
@@ -36,7 +39,11 @@ COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 RUN find /usr/local/lib/python3.12/site-packages -name "pip" -type d -exec rm -rf {} + 2>/dev/null || true
 RUN find /usr/local/lib/python3.12/site-packages -name "pip*" -delete 2>/dev/null || true
 
-COPY app/ ./app/
+COPY src/sandbox/app/ ./app/
+
+# Demo dataset baked into the image (1.4 MB). Replaced by per-agent
+# bucket-mounted CSV in a future revision; sufficient for MVP.
+COPY datasets/california-housing-prices.csv /app/datasets/california-housing-prices.csv
 
 USER sandbox
 
