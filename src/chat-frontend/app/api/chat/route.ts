@@ -1,30 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { getServerTracer } from '../../../lib/server-tracing';
-
-/**
- * Chat route handler — proxies user messages to kagent's session API and
- * streams the agent's response back to the browser as SSE.
- *
- * Configuration (env, set on the Deployment):
- *  - KAGENT_BASE_URL    e.g. http://kagent.kagent-system.svc.cluster.local
- *  - AGENT_NAMESPACE    e.g. agent-housing-demo
- *  - AGENT_NAME         e.g. planner   (the agent this UI is scoped to)
- *  - USER_ID            e.g. demo@whisperops
- *
- * Wire pattern (synchronous /invoke, single SSE event with the full reply):
- *  1) On first request, fetch the agent's `component` from
- *     GET /api/agents/{ns}/{name}. This is the team_config kagent's
- *     /invoke handler requires. Cached process-wide.
- *  2) On each user message:
- *     - If no kagent session is associated with this browser session
- *       (cookie `kagent-session-id`), POST /api/sessions to create one.
- *     - POST /api/sessions/{id}/invoke with {task, team_config}.
- *     - Emit one SSE event `data: {"content": "..."}` then `data: [DONE]`.
- *
- * Streaming via /invoke/stream is a future improvement; the synchronous
- * path is enough to prove the user-facing demo works.
- */
+import { invokeStream } from '../../../lib/kagent-stream';
 
 const KAGENT_BASE_URL =
   process.env.KAGENT_BASE_URL ?? 'http://kagent.kagent-system.svc.cluster.local';
@@ -33,7 +10,6 @@ const AGENT_NAME = process.env.AGENT_NAME ?? 'planner';
 const USER_ID = process.env.USER_ID ?? 'demo@whisperops';
 const AGENT_REF = `${AGENT_NAMESPACE}/${AGENT_NAME}`;
 
-// Process-wide cache for the agent's team_config Component.
 let cachedTeamConfig: unknown = null;
 
 async function fetchTeamConfig(): Promise<unknown> {
@@ -73,67 +49,6 @@ async function createSession(): Promise<string> {
   return body.data.id;
 }
 
-interface InvokeMessage {
-  type?: string;
-  source?: string;
-  content?: string;
-}
-
-async function invoke(sessionId: string, task: string): Promise<string> {
-  const tracer = getServerTracer();
-  return tracer.startActiveSpan('kagent.invoke', async (span) => {
-    span.setAttribute('agent.id', AGENT_NAMESPACE);
-    span.setAttribute('agent.role', AGENT_NAME);
-    span.setAttribute('agent.ref', AGENT_REF);
-    span.setAttribute('kagent.session_id', sessionId);
-    span.setAttribute('user.id', USER_ID);
-    try {
-      const reply = await invokeInner(sessionId, task);
-      span.setAttribute('reply.length', reply.length);
-      return reply;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      span.recordException(err instanceof Error ? err : new Error(msg));
-      span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
-      throw err;
-    } finally {
-      span.end();
-    }
-  });
-}
-
-async function invokeInner(sessionId: string, task: string): Promise<string> {
-  const teamConfig = await fetchTeamConfig();
-  const url = `${KAGENT_BASE_URL}/api/sessions/${sessionId}/invoke?user_id=${encodeURIComponent(USER_ID)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task, team_config: teamConfig }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`kagent /invoke failed: HTTP ${res.status} ${text}`);
-  }
-  const body = (await res.json()) as { data?: InvokeMessage[]; error?: string | boolean };
-  const err = body.error;
-  if (typeof err === 'string') {
-    throw new Error(err);
-  }
-  if (err === true) {
-    throw new Error('kagent invoke errored');
-  }
-  // The data array is [user_message, ...agent_messages]. Pick the last
-  // assistant TextMessage with non-empty content as the answer.
-  const messages = body.data ?? [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.type === 'TextMessage' && m.source !== 'user' && m.content) {
-      return m.content;
-    }
-  }
-  return '(no assistant response)';
-}
-
 function sseChunk(payload: object): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
 }
@@ -156,7 +71,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Look up or create a kagent session for this browser via cookie.
   const cookieHeader = req.headers.get('cookie') ?? '';
   const cookieMatch = cookieHeader.match(/kagent-session-id=([a-f0-9-]+)/);
   let sessionId = cookieMatch?.[1];
@@ -168,18 +82,37 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const stream = new ReadableStream({
     async start(controller) {
+      const invokeSpan = tracer.startSpan('kagent.invoke');
+      invokeSpan.setAttribute('agent.id', AGENT_NAMESPACE);
+      invokeSpan.setAttribute('agent.role', AGENT_NAME);
+      invokeSpan.setAttribute('agent.ref', AGENT_REF);
+      invokeSpan.setAttribute('kagent.session_id', sessionId!);
+      invokeSpan.setAttribute('user.id', USER_ID);
+      let finalChunkCount = 0;
       try {
-        const reply = await invoke(sessionId!, message);
-        controller.enqueue(sseChunk({ content: reply }));
-        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        const teamConfig = await fetchTeamConfig();
+        await invokeStream(
+          KAGENT_BASE_URL,
+          sessionId!,
+          USER_ID,
+          message,
+          teamConfig,
+          controller,
+          (n) => { finalChunkCount = n; },
+        );
+        invokeSpan.setAttribute('stream.chunk_count', finalChunkCount);
+        invokeSpan.setStatus({ code: SpanStatusCode.OK });
         span.setStatus({ code: SpanStatusCode.OK });
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'invoke failed';
         controller.enqueue(sseChunk({ error: msg }));
+        invokeSpan.recordException(err instanceof Error ? err : new Error(msg));
+        invokeSpan.setStatus({ code: SpanStatusCode.ERROR, message: msg });
         span.recordException(err instanceof Error ? err : new Error(msg));
         span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
       } finally {
         controller.close();
+        invokeSpan.end();
         span.end();
       }
     },
