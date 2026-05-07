@@ -1,11 +1,28 @@
 {
   "__inputs": [],
   "__requires": [
-    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.0.0" },
-    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
-    { "type": "datasource", "id": "tempo", "name": "Tempo", "version": "1.0.0" }
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "tempo",
+      "name": "Tempo",
+      "version": "1.0.0"
+    }
   ],
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "description": "Agent query latency p50/p95/p99, A2A hop breakdown, error rates",
   "editable": true,
   "graphTooltip": 1,
@@ -13,62 +30,182 @@
   "links": [],
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
-      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "options": {
+        "bucketSize": "auto",
+        "fillOpacity": 80,
+        "gradientMode": "none",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
       "title": "Query Latency p50/p95/p99",
-      "type": "timeseries",
+      "type": "histogram",
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum(rate(whisperops_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
-        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
-        { "expr": "histogram_quantile(0.99, sum(rate(whisperops_query_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name=~\"agent-.+\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | select(duration)",
+          "tableType": "spans",
+          "refId": "A",
+          "legendFormat": "duration"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
       "id": 2,
-      "options": { "legend": { "displayMode": "table", "placement": "right" } },
-      "title": "A2A Hop Latency (Planner → Analyst → Writer)",
-      "type": "timeseries",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "p50",
+            "p95"
+          ]
+        },
+        "orientation": "auto",
+        "text": {},
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "A2A Hop Latency (Planner \u2192 Analyst \u2192 Writer)",
+      "type": "stat",
       "targets": [
-        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_a2a_hop_duration_seconds_bucket{hop='planner'}[5m])) by (le))", "legendFormat": "Planner p95" },
-        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_a2a_hop_duration_seconds_bucket{hop='analyst'}[5m])) by (le))", "legendFormat": "Analyst p95" },
-        { "expr": "histogram_quantile(0.95, sum(rate(whisperops_a2a_hop_duration_seconds_bucket{hop='writer'}[5m])) by (le))", "legendFormat": "Writer p95" }
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ span.whisperops.agent_role=~\"planner|analyst|writer\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | select(duration)",
+          "tableType": "spans",
+          "refId": "A",
+          "legendFormat": "{{span.whisperops.agent_role}}"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "lineWidth": 1 } } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 1
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
       "id": 3,
-      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      },
       "title": "Error Rate by Type",
       "type": "timeseries",
       "targets": [
-        { "expr": "sum(rate(whisperops_query_errors_total[5m])) by (error_type) / sum(rate(whisperops_query_total[5m]))", "legendFormat": "{{error_type}}" }
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ status=error && resource.service.name=~\"agent-.+\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | count() by (name)",
+          "refId": "A",
+          "legendFormat": "{{name}}"
+        }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
       "id": 4,
-      "title": "Distributed Tracing — Tempo",
+      "title": "Distributed Tracing \u2014 Tempo",
       "type": "row"
     },
     {
-      "datasource": { "type": "tempo", "uid": "tempo" },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" },
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
       "id": 5,
       "options": {
-        "reduceOptions": { "calcs": ["p50", "p95"] },
+        "reduceOptions": {
+          "calcs": [
+            "p50",
+            "p95"
+          ]
+        },
         "orientation": "auto",
         "text": {},
         "textMode": "auto",
@@ -78,9 +215,12 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "tempo", "uid": "tempo" },
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
           "queryType": "traceql",
-          "query": "{span.whisperops.agent_role=~\"planner|analyst|writer\"} | select(duration)",
+          "query": "{ span.whisperops.agent_role=~\"planner|analyst|writer\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | select(duration)",
           "tableType": "spans",
           "refId": "A",
           "legendFormat": "{{span.whisperops.agent_role}}"
@@ -88,27 +228,48 @@
       ]
     },
     {
-      "datasource": { "type": "tempo", "uid": "tempo" },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" },
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
       "id": 6,
       "options": {
         "bucketSize": "auto",
         "fillOpacity": 80,
         "gradientMode": "none",
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
       },
       "title": "End-to-End Trace Duration Distribution",
       "type": "histogram",
       "targets": [
         {
-          "datasource": { "type": "tempo", "uid": "tempo" },
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
           "queryType": "traceql",
-          "query": "{resource.service.name=~\"agent-.*\"} | select(duration)",
+          "query": "{ resource.service.name=~\"agent-.*\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | select(duration)",
           "tableType": "spans",
           "refId": "A",
           "legendFormat": "duration"
@@ -116,36 +277,82 @@
       ]
     },
     {
-      "datasource": { "type": "tempo", "uid": "tempo" },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
       "fieldConfig": {
-        "defaults": { "color": { "mode": "thresholds" }, "unit": "short" },
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short"
+        },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
       "id": 7,
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "orientation": "auto",
-        "text": {},
-        "textMode": "auto",
-        "colorMode": "value"
+        "footer": {
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Count",
+            "desc": true
+          }
+        ]
       },
       "title": "A2A Span Count per Query (5m window)",
-      "type": "stat",
+      "type": "table",
       "targets": [
         {
-          "datasource": { "type": "tempo", "uid": "tempo" },
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
           "queryType": "traceql",
-          "query": "{name=\"A2A invoke\"} | count_over_time(5m)",
+          "query": "{ name=\"A2A invoke\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | count() by (resource.service.name)",
           "refId": "A",
-          "legendFormat": "A2A spans"
+          "legendFormat": "{{resource.service.name}}"
         }
       ]
     }
   ],
   "schemaVersion": 38,
-  "tags": ["whisperops", "agents", "performance"],
+  "tags": [
+    "whisperops",
+    "agents",
+    "performance"
+  ],
   "title": "Agent Performance",
   "uid": "whisperops-agent-performance",
-  "version": 1
+  "version": 2,
+  "templating": {
+    "list": [
+      {
+        "name": "agent_namespace",
+        "type": "query",
+        "label": "Agent Namespace",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom"
+        },
+        "query": "label_values(kube_namespace_labels{label_app_kubernetes_io_part_of=\"whisperops\"}, namespace)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "value": "$__all",
+          "text": "All"
+        },
+        "refresh": 2
+      }
+    ]
+  }
 }

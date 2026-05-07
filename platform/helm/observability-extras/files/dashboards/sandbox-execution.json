@@ -1,10 +1,22 @@
 {
   "__inputs": [],
   "__requires": [
-    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "11.0.0" },
-    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
   ],
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "description": "Sandbox execution: concurrency, queue depth, timeout/OOM rates, artifact upload latency",
   "editable": true,
   "graphTooltip": 1,
@@ -12,94 +24,340 @@
   "links": [],
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 2 }] } } },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
       "title": "Concurrent Executions",
       "type": "stat",
-      "targets": [{ "expr": "sandbox_concurrent_executions", "legendFormat": "Concurrent" }]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "percentunit", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.05 }, { "color": "red", "value": 0.1 }] } } },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
-      "id": 2,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "title": "Timeout Rate",
-      "type": "stat",
-      "targets": [{ "expr": "rate(sandbox_timeouts_total[10m]) / rate(sandbox_executions_total[10m])", "legendFormat": "Timeout rate" }]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "percentunit", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.01 }] } } },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
-      "id": 3,
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "title": "OOM Rate",
-      "type": "stat",
-      "targets": [{ "expr": "rate(sandbox_oom_total[10m]) / rate(sandbox_executions_total[10m])", "legendFormat": "OOM rate" }]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
-      "id": 4,
-      "options": { "legend": { "displayMode": "table", "placement": "right" } },
-      "title": "Execution Duration p50/p95/p99",
-      "type": "timeseries",
       "targets": [
-        { "expr": "histogram_quantile(0.50, sum(rate(sandbox_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
-        { "expr": "histogram_quantile(0.95, sum(rate(sandbox_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
-        { "expr": "histogram_quantile(0.99, sum(rate(sandbox_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ name=\"sandbox.execute\" && status=unset && resource.k8s.namespace.name=~\"$agent_namespace\" } | count()",
+          "refId": "A",
+          "legendFormat": "Concurrent"
+        }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "prom" },
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "title": "Timeout total",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum(count_over_time({namespace=~\"$agent_namespace\", app=\"sandbox\"} | json | msg=\"timeout\" [5m]))",
+          "refId": "A",
+          "legendFormat": "Timeouts"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      },
+      "title": "OOM total",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum(count_over_time({namespace=~\"$agent_namespace\", app=\"sandbox\"} | json | msg=\"memory limit exceeded\" [5m]))",
+          "refId": "A",
+          "legendFormat": "OOM events"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "id": 4,
+      "options": {
+        "bucketSize": "auto",
+        "fillOpacity": 80,
+        "gradientMode": "none",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "title": "Execution Duration p50/p95/p99",
+      "type": "histogram",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ name=\"sandbox.execute\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | select(duration)",
+          "tableType": "spans",
+          "refId": "A",
+          "legendFormat": "duration"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 1
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
       "id": 5,
-      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "options": {
+        "bucketSize": "auto",
+        "fillOpacity": 80,
+        "gradientMode": "none",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
       "title": "Artifact Upload Latency p95",
-      "type": "timeseries",
-      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(sandbox_upload_duration_seconds_bucket[5m])) by (le))", "legendFormat": "Upload p95" }]
+      "type": "histogram",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ name=\"artifact_upload\" && resource.k8s.namespace.name=~\"$agent_namespace\" } | select(duration)",
+          "tableType": "spans",
+          "refId": "A",
+          "legendFormat": "duration"
+        }
+      ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
       "id": 6,
-      "title": "Structured Logs — Loki",
+      "title": "Structured Logs \u2014 Loki",
       "type": "row"
     },
     {
-      "datasource": { "type": "loki", "uid": "loki" },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
       "id": 7,
       "options": {
-        "footer": { "show": false },
+        "footer": {
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{ "displayName": "Rate", "desc": true }]
+        "sortBy": [
+          {
+            "displayName": "Rate",
+            "desc": true
+          }
+        ]
       },
       "title": "Error Rate by Message (last 1h)",
       "type": "table",
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "sum by (level, msg) (rate({namespace=~\"agent-.*\", app=\"sandbox\"} |= \"error\" | json | __error__=\"\" [5m]))",
-          "legendFormat": "{{level}} — {{msg}}",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum by (level, msg) (rate({namespace=~\"$agent_namespace\", app=\"sandbox\"} |= \"error\" | json | __error__=\"\" [5m]))",
+          "legendFormat": "{{level}} \u2014 {{msg}}",
           "refId": "A"
         }
       ]
     },
     {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
       "id": 8,
       "options": {
         "dedupStrategy": "none",
@@ -115,8 +373,11 @@
       "type": "logs",
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{namespace=~\"agent-.*\", app=\"sandbox\"} | json",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=~\"$agent_namespace\", app=\"sandbox\"} | json",
           "legendFormat": "",
           "refId": "A"
         }
@@ -124,8 +385,33 @@
     }
   ],
   "schemaVersion": 38,
-  "tags": ["whisperops", "sandbox", "execution"],
+  "tags": [
+    "whisperops",
+    "sandbox",
+    "execution"
+  ],
   "title": "Sandbox Execution",
   "uid": "whisperops-sandbox-execution",
-  "version": 1
+  "version": 2,
+  "templating": {
+    "list": [
+      {
+        "name": "agent_namespace",
+        "type": "query",
+        "label": "Agent Namespace",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prom"
+        },
+        "query": "label_values(kube_namespace_labels{label_app_kubernetes_io_part_of=\"whisperops\"}, namespace)",
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "value": "$__all",
+          "text": "All"
+        },
+        "refresh": 2
+      }
+    ]
+  }
 }
