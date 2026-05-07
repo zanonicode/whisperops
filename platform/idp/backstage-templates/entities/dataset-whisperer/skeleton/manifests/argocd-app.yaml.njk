@@ -13,13 +13,14 @@ spec:
   source:
     # CNOE-vendored Gitea uses giteaAdmin as the owner of repos created by
     # the scaffolder (publish:gitea action). Each agent gets its own repo
-    # at giteaAdmin/agent-{name}; manifests live at the repo root.
+    # at giteaAdmin/agent-{name}; K8s manifests live in manifests/ (DD-53).
+    # catalog-info.yaml stays at the repo root for Backstage catalog discovery
+    # and is invisible to ArgoCD because it only watches the manifests/ path.
     repoURL: https://gitea.gitea.svc.cluster.local:3000/giteaAdmin/agent-${{ values.agent_name }}.git
     targetRevision: HEAD
-    path: .
+    path: manifests
     directory:
       recurse: true
-      exclude: '{catalog-info.yaml,argocd-app.yaml,README.md}'
   destination:
     server: https://kubernetes.default.svc
     namespace: agent-${{ values.agent_name }}

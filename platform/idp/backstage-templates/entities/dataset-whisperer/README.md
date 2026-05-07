@@ -12,12 +12,43 @@ This Backstage template provisions a fully governed **Dataset Whisperer** agent 
 - Kyverno network policies (egress allowlist)
 - Budget-controller integration via `whisperops.io/budget-usd` annotation
 
+## Scaffolded Repo Layout
+
+Each scaffolded agent repo has a two-level layout (DD-53):
+
+```
+agent-{name}/
+  catalog-info.yaml      # Backstage Component — stays at root; invisible to ArgoCD
+  manifests/             # ArgoCD sync path — only K8s resources here
+    namespace.yaml
+    bucket.yaml
+    service-account.yaml
+    service-account-key.yaml
+    iam-bindings.yaml
+    modelconfig-primary.yaml
+    modelconfig-planner.yaml
+    agent-planner.yaml
+    agent-analyst.yaml
+    agent-writer.yaml
+    toolserver-sandbox.yaml
+    sandbox.yaml
+    kyverno-policy.yaml
+    chat-frontend.yaml
+    ingress.yaml
+    argocd-app.yaml
+```
+
+ArgoCD Application `spec.source.path` is `manifests`, so it never tries to apply
+`catalog-info.yaml` as a K8s resource (which previously produced a CRD-not-found
+OutOfSync error for every new scaffold).
+
 ## Form Fields
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `agent_name` | Yes | Slug, `^[a-z][a-z0-9-]{2,28}[a-z0-9]$` |
 | `description` | Yes | Free-text description (max 200 chars) |
+| `base_domain` | Yes | Full sslip.io domain, e.g. `136.115.224.138.sslip.io`. Run `kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}` to get the current value (DD-50). |
 | `dataset_id` | Yes | One of: `california-housing`, `online-retail-ii`, `spotify-tracks` |
 | `primary_model` | Yes | `claude-haiku-4-5-20251001` or `claude-sonnet-4-5-20251001` |
 | `budget_usd` | No | Max spend in USD (default `5.00`, format: `\d+\.\d{2}`) |

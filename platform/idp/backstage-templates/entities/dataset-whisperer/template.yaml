@@ -6,6 +6,9 @@ metadata:
   description: >
     Provision a fully governed Dataset Whisperer agent — Planner + Analyst + Writer —
     with a dedicated GCS bucket, IAM bindings, sandbox access, and chat UI.
+    K8s manifests are scaffolded into a manifests/ subfolder so ArgoCD syncs only
+    Kubernetes resources; catalog-info.yaml stays at the repo root for Backstage
+    catalog discovery. See DD-50 and DD-53 in DESIGN_whisperops.md (v1.22).
   tags:
     - whisperops
     - ai-agent
@@ -44,8 +47,8 @@ spec:
           description: >
             Hostname suffix for the agent's chat URL. Format:
             `<vm-external-ip>.sslip.io` (e.g. `136.115.224.138.sslip.io`).
-            See `kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}`
-            for the current platform value.
+            Run: kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}
+            to retrieve the current platform value populated by vm-bootstrap (DD-50).
           pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}\.sslip\.io$|^[a-z0-9.-]+\.[a-z]{2,}$'
 
     - title: Dataset & Model Configuration
@@ -118,7 +121,7 @@ spec:
         argoInstance: in-cluster
         projectName: default
         repoUrl: https://cnoe.localtest.me:8443/gitea/giteaAdmin/agent-${{ parameters.agent_name }}
-        path: "."
+        path: "manifests"
 
     # catalog:register intentionally omitted — Backstage's catalog ingester
     # auto-discovers the catalog-info.yaml from the Gitea repo via the
@@ -132,4 +135,4 @@ spec:
       - title: Agent Repository
         url: ${{ steps['publish-gitea'].output.remoteUrl }}
       - title: Chat UI
-        url: https://${{ parameters.agent_name }}.sslip.io
+        url: https://${{ parameters.agent_name }}.${{ parameters.base_domain }}
