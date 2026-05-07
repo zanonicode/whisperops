@@ -371,6 +371,14 @@ spec:
     template:
       engineVersion: v2
       data:
+        # DD-38 follow-up (2026-05-07 deploy): KEYCLOAK_* keys removed by DD-37
+        # were not restored when DD-38 reverted to Opção I (Keycloak OIDC).
+        # Backstage app-config (line ~148/150 above) substitutes ${KEYCLOAK_*}
+        # at startup via envFrom; without these in the Secret, the auth-backend
+        # plugin fails: "Missing required config value at 'auth.providers...'".
+        KEYCLOAK_NAME_METADATA: 'https://keycloak.keycloak.svc.cluster.local:8443/realms/cnoe/.well-known/openid-configuration'
+        KEYCLOAK_CLIENT_ID: backstage
+        KEYCLOAK_CLIENT_SECRET: "{{.BACKSTAGE_CLIENT_SECRET}}"
         BACKSTAGE_FRONTEND_URL: https://cnoe.localtest.me:8443/backstage
         POSTGRES_HOST: postgresql.backstage.svc.cluster.local
         POSTGRES_PORT: '5432'
