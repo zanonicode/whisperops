@@ -47,15 +47,22 @@ log "Installing helm"
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 log "Installing helmfile"
-HELMFILE_VERSION="$(curl -fsSL https://api.github.com/repos/helmfile/helmfile/releases/latest \
-    | grep -m1 tag_name | sed 's/.*"v\([^"]*\)".*/\1/')"
+# Past incident (2026-05-07 deploy retry): the previous form here did
+#   `curl api.github.com/.../releases/latest | grep -m1 tag_name | sed ...`
+# `grep -m1` exits as soon as it sees the first match, closing the pipe while
+# curl is still writing the rest of the JSON. With `set -o pipefail`, the
+# pipeline inherits curl's SIGPIPE exit (23), and `set -e` aborts the script.
+# Whether the race fires depends on network latency vs grep scheduling — it
+# passed earlier today and failed on the next redeploy with no code change.
+# Pin the version instead: faster (no API call), reproducible, and no race.
+HELMFILE_VERSION="1.5.0"
 curl -fsSL "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C /usr/local/bin helmfile
 chmod +x /usr/local/bin/helmfile
 
 log "Installing sops"
-SOPS_VERSION="$(curl -fsSL https://api.github.com/repos/getsops/sops/releases/latest \
-    | grep -m1 tag_name | sed 's/.*"v\([^"]*\)".*/\1/')"
+# Same SIGPIPE risk as helmfile above — pin to a known-good version.
+SOPS_VERSION="3.12.2"
 curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
     -o /usr/local/bin/sops
 chmod +x /usr/local/bin/sops

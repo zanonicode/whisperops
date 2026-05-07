@@ -376,7 +376,7 @@ spec:
         # Backstage app-config (line ~148/150 above) substitutes ${KEYCLOAK_*}
         # at startup via envFrom; without these in the Secret, the auth-backend
         # plugin fails: "Missing required config value at 'auth.providers...'".
-        KEYCLOAK_NAME_METADATA: 'https://keycloak.keycloak.svc.cluster.local:8443/realms/cnoe/.well-known/openid-configuration'
+        KEYCLOAK_NAME_METADATA: 'https://cnoe.localtest.me:8443/keycloak/realms/cnoe/.well-known/openid-configuration'
         KEYCLOAK_CLIENT_ID: backstage
         KEYCLOAK_CLIENT_SECRET: "{{.BACKSTAGE_CLIENT_SECRET}}"
         BACKSTAGE_FRONTEND_URL: https://cnoe.localtest.me:8443/backstage

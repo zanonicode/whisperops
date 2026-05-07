@@ -94,6 +94,18 @@ tf-apply: tf-init ## Apply Terraform (provisions VM, buckets, IAM)
 
 copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.yaml, node_modules, macOS metadata)
 	@echo "→ Copying repo to whisperops-vm"
+	@# Past incident (2026-05-07 chained deploy): when copy-repo runs straight after
+	@# tf-apply, the VM is fresh (status=RUNNING) but SSH on :22 may not be listening
+	@# for another 30-90s. The tar | ssh below then fails fast with "Network is
+	@# unreachable" and aborts the whole chain. Poll SSH until it answers.
+	@echo "  ↳ Waiting for SSH on whisperops-vm (up to 5 min)"
+	@for i in $$(seq 1 60); do \
+		if gcloud compute ssh whisperops-vm --zone=$(ZONE) --command='exit 0' >/dev/null 2>&1; then \
+			echo ""; echo "  ✓ SSH ready"; break; \
+		fi; \
+		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ SSH not ready after 5 min"; exit 1; fi; \
+		printf "."; sleep 5; \
+	done
 	@# Past incident (2026-05-07 deploy retry): macOS tar emitted AppleDouble
 	@# `._*` metadata files alongside YAMLs in helm chart templates dirs;
 	@# kubectl apply -f then choked with "control characters are not allowed".
@@ -113,6 +125,32 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
 
 deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
+	@# Past incident (2026-05-07 chained deploy): copy-repo only waits for SSH:22,
+	@# but the VM's startup-script keeps running afterwards: it installs helmfile,
+	@# sops, kind, then runs `idpbuilder create` (~5-10 min) and waits up to 900s
+	@# for all ArgoCD apps to become Synced/Healthy. _vm-bootstrap below assumes
+	@# both the tooling and the IDP layer are already up. Without this wait we get
+	@# either "helmfile: command not found" (if startup is still installing) or a
+	@# missing kubeconfig (if kind cluster isn't created yet). Block until the
+	@# startup-script logs its terminal sentinel "whisperops bootstrap complete".
+	@echo "→ Waiting for VM startup-script to complete (IDP layer ready, up to 25 min)"
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) --command=' \
+		for i in $$(seq 1 150); do \
+			if sudo grep -q "whisperops bootstrap complete" /var/log/whisperops-bootstrap.log 2>/dev/null; then \
+				echo ""; echo "  ✓ Startup-script finished (IDP layer Synced/Healthy)"; exit 0; \
+			fi; \
+			if sudo grep -q "^\[.*\] TIMEOUT:" /var/log/whisperops-bootstrap.log 2>/dev/null; then \
+				echo ""; echo "  ✗ Startup-script reported TIMEOUT — inspect /var/log/whisperops-bootstrap.log on VM"; exit 1; \
+			fi; \
+			if [ "$$(sudo systemctl is-active google-startup-scripts 2>/dev/null)" = "inactive" ] \
+			   && ! sudo grep -q "whisperops bootstrap complete" /var/log/whisperops-bootstrap.log 2>/dev/null; then \
+				echo ""; echo "  ✗ Startup-script exited without logging completion — inspect /var/log/whisperops-bootstrap.log on VM"; \
+				sudo tail -20 /var/log/whisperops-bootstrap.log; exit 1; \
+			fi; \
+			printf "."; sleep 10; \
+		done; \
+		echo ""; echo "  ✗ Startup-script did not complete in 25 min"; exit 1 \
+	'
 	gcloud compute ssh whisperops-vm --zone=$(ZONE) \
 		--command='cd /tmp/whisperops && make _vm-bootstrap'
 
