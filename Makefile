@@ -8,7 +8,8 @@
         upload-datasets decrypt-secrets \
         lint lint-python lint-ts lint-helm lint-terraform \
         copy-repo deploy-vm _vm-bootstrap \
-        _drop-argo-workflows-crds
+        _drop-argo-workflows-crds \
+        _clean-orphan-iam-bindings _clean-orphan-firewalls
 
 TERRAFORM_DIR := terraform
 TF_ENV_DIR    := terraform/envs/demo
@@ -143,11 +144,14 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	$(MAKE) langfuse-secret; \
 	echo "→ Regenerating external Ingresses"; \
 	$(MAKE) external-ingresses VM_IP="$$DERIVED_IP"; \
+	echo "→ Materializing whisperops-system Namespace + platform-config skeleton (DD-50)"; \
+	kubectl apply -f platform/whisperops-system/platform-config.yaml \
+		|| echo "  ⚠ platform-config.yaml apply failed; bring-up continues"; \
 	echo "→ Deriving registry_url"; \
 	REGISTRY_URL=$$(terraform -chdir=terraform output -raw registry_url 2>/dev/null \
 		|| kubectl get configmap platform-config -n whisperops-system \
 			-o jsonpath='"'"'{.data.registry_url}'"'"' 2>/dev/null || echo ""); \
-	echo "→ Updating platform-config ConfigMap"; \
+	echo "→ Updating platform-config ConfigMap with live VM IP and registry_url (DD-50)"; \
 	kubectl create configmap platform-config -n whisperops-system \
 		--from-literal=base_domain="$$DERIVED_IP.sslip.io" \
 		--from-literal=registry_url="$$REGISTRY_URL" \
@@ -187,71 +191,136 @@ destroy: ## Tear down EVERYTHING: drain Crossplane → empty buckets → terrafo
 	@if [ "$(SKIP_CROSSPLANE)" != "1" ]; then $(MAKE) drain-crossplane; else echo "↳ Skipping Crossplane drain (SKIP_CROSSPLANE=1)"; fi
 	@if [ "$(SKIP_BUCKETS)" != "1" ]; then $(MAKE) empty-buckets PROJECT_ID=$(PROJECT_ID); else echo "↳ Skipping bucket empty (SKIP_BUCKETS=1)"; fi
 	$(MAKE) _drop-argo-workflows-crds
+	$(MAKE) _clean-orphan-firewalls PROJECT_ID=$(PROJECT_ID)
 	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=envs/demo/terraform.tfvars -auto-approve
+	$(MAKE) _clean-orphan-iam-bindings PROJECT_ID=$(PROJECT_ID)
 	@echo "✓ Teardown complete."
 
-_drop-argo-workflows-crds: ## Drop Argo Workflows CRDs (idempotent; safe on clusters that never had them)
-	@echo "→ Removing Argo Workflows CRDs (DD-35)"
-	@kubectl delete crd \
-		workflows.argoproj.io \
-		workflowtemplates.argoproj.io \
-		cronworkflows.argoproj.io \
-		clusterworkflowtemplates.argoproj.io \
-		workfloweventbindings.argoproj.io \
-		workflowtaskresults.argoproj.io \
-		workflowtasksets.argoproj.io \
-		--ignore-not-found 2>/dev/null || true
-	@echo "  ✓ Argo Workflows CRDs removed (or were absent)"
+_drop-argo-workflows-crds: ## Drop Argo Workflows CRDs from the VM-side kind cluster (idempotent)
+	@echo "→ Removing Argo Workflows CRDs (DD-35; via VM SSH)"
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) --command='\
+		sudo kubectl delete crd \
+			workflows.argoproj.io \
+			workflowtemplates.argoproj.io \
+			cronworkflows.argoproj.io \
+			clusterworkflowtemplates.argoproj.io \
+			workfloweventbindings.argoproj.io \
+			workflowtaskresults.argoproj.io \
+			workflowtasksets.argoproj.io \
+			--ignore-not-found 2>/dev/null || true \
+	' 2>/dev/null || echo "  ↳ VM unreachable — cluster already destroyed, skipping"
+	@echo "  ✓ Argo Workflows CRDs removed (or VM was already gone)"
 
-drain-crossplane: ## Delete all Crossplane GCP Managed Resources cluster-wide and wait for finalizers
-	@echo "→ Draining Crossplane Managed Resources (*.gcp.upbound.io)"
-	@if ! kubectl version --client=false --request-timeout=5s >/dev/null 2>&1; then \
-		echo "  ↳ kubectl unreachable — assuming cluster already gone, skipping"; \
-		exit 0; \
-	fi
-	@CRDS=$$(kubectl get crd -o name 2>/dev/null | grep -E '\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$' || true); \
-	if [ -z "$$CRDS" ]; then \
-		echo "  ↳ No Crossplane GCP CRDs found — nothing to drain"; \
+drain-crossplane: ## Delete all Crossplane GCP Managed Resources on the VM-side cluster and wait for finalizers
+	@echo "→ Draining Crossplane Managed Resources (*.gcp.upbound.io) via VM SSH"
+	@# DD-39 Item 6 (post-mortem): kubectl operations MUST go through the VM, not local
+	@# kubectl. Local context may point to an unrelated cluster (EKS, etc.) which would
+	@# (a) silently no-op the drain, leaving GCP orphans after terraform destroy, and
+	@# (b) destructively act on the wrong cluster (e.g. _drop-argo-workflows-crds
+	@# previously deleted CRDs from a remote EKS cluster). All cluster-state work
+	@# happens INSIDE the VM via gcloud compute ssh.
+	@# Connectivity check + drain logic must be in ONE recipe line (single subshell)
+	@# so the early-exit on VM-gone actually stops execution; multi-line Make recipes
+	@# run each line in its own shell, so `exit 0` only exits that line.
+	@if ! gcloud compute instances describe whisperops-vm --zone=$(ZONE) >/dev/null 2>&1; then \
+		echo "  ↳ VM does not exist — skipping (assumed already destroyed)"; \
 		exit 0; \
 	fi; \
-	for crd in $$CRDS; do \
-		KIND=$$(echo $$crd | sed 's|customresourcedefinition.apiextensions.k8s.io/||'); \
-		COUNT=$$(kubectl get $$KIND -A --no-headers 2>/dev/null | wc -l | tr -d ' '); \
-		if [ "$$COUNT" -gt 0 ]; then \
-			echo "  ↳ Deleting $$COUNT instance(s) of $$KIND"; \
-			kubectl delete $$KIND --all -A --wait=false --timeout=60s 2>/dev/null || true; \
+	gcloud compute ssh whisperops-vm --zone=$(ZONE) --command='\
+		set -e; \
+		CRDS=$$(sudo kubectl get crd -o name 2>/dev/null | grep -E "\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$" || true); \
+		if [ -z "$$CRDS" ]; then \
+			echo "  ↳ No Crossplane GCP CRDs found — nothing to drain"; \
+			exit 0; \
+		fi; \
+		for crd in $$CRDS; do \
+			KIND=$$(echo $$crd | sed "s|customresourcedefinition.apiextensions.k8s.io/||"); \
+			COUNT=$$(sudo kubectl get $$KIND -A --no-headers 2>/dev/null | wc -l | tr -d " "); \
+			if [ "$$COUNT" -gt 0 ]; then \
+				echo "  ↳ Deleting $$COUNT instance(s) of $$KIND"; \
+				sudo kubectl delete $$KIND --all -A --wait=false --timeout=60s 2>/dev/null || true; \
+			fi; \
+		done; \
+		echo "  ↳ Waiting up to 5 min for Crossplane finalizers to release GCP resources..."; \
+		for i in $$(seq 1 60); do \
+			REMAINING=0; \
+			for crd in $$(sudo kubectl get crd -o name 2>/dev/null | grep -E "\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$"); do \
+				KIND=$$(echo $$crd | sed "s|customresourcedefinition.apiextensions.k8s.io/||"); \
+				C=$$(sudo kubectl get $$KIND -A --no-headers 2>/dev/null | wc -l | tr -d " "); \
+				REMAINING=$$((REMAINING + C)); \
+			done; \
+			if [ "$$REMAINING" = "0" ]; then echo "  ✓ All Managed Resources drained"; exit 0; fi; \
+			printf "."; sleep 5; \
+		done; \
+		echo ""; \
+		echo "  ⚠ Timed out with Managed Resources still present. Inspect inside VM with:"; \
+		echo "      sudo kubectl get managed -A"; \
+		echo "  Re-run drain or pass SKIP_CROSSPLANE=1 (will leave GCP orphans)."; \
+		exit 1 \
+	'
+
+_clean-orphan-firewalls: ## Delete any non-TF firewall rules in whisperops-vpc that would block VPC destroy
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Cleaning orphan firewall rules in whisperops-vpc + default networks"
+	@# Past incident (2026-05-07 destroy): firewall 'allow-kind-ingress-vpc' was
+	@# created manually pre-DD-39, never imported to TF state. terraform destroy
+	@# blocked on "network resource is already being used by 'firewalls/...'".
+	@# This step deletes any firewall rule referencing whisperops-vpc that TF
+	@# does not own, so the VPC destroy can proceed cleanly.
+	@TF_FW_NAMES=$$(terraform -chdir=$(TERRAFORM_DIR) state list 2>/dev/null | grep firewall | awk -F'"' '{print $$2}' | sort -u); \
+	ALL_FW=$$(gcloud compute firewall-rules list --project=$(PROJECT_ID) \
+		--filter="network:(whisperops-vpc OR default) AND name~^allow-kind" \
+		--format="value(name)" 2>/dev/null); \
+	for fw in $$ALL_FW; do \
+		if ! echo "$$TF_FW_NAMES" | grep -qx "$$fw"; then \
+			echo "  ↳ Deleting orphan firewall: $$fw"; \
+			gcloud compute firewall-rules delete "$$fw" --project=$(PROJECT_ID) --quiet 2>&1 | tail -1; \
 		fi; \
 	done
-	@echo "  ↳ Waiting up to 5 min for Crossplane finalizers to release GCP resources..."
-	@for i in $$(seq 1 60); do \
-		REMAINING=0; \
-		for crd in $$(kubectl get crd -o name 2>/dev/null | grep -E '\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$'); do \
-			KIND=$$(echo $$crd | sed 's|customresourcedefinition.apiextensions.k8s.io/||'); \
-			C=$$(kubectl get $$KIND -A --no-headers 2>/dev/null | wc -l | tr -d ' '); \
-			REMAINING=$$((REMAINING + C)); \
-		done; \
-		if [ "$$REMAINING" = "0" ]; then echo "  ✓ All Managed Resources drained"; exit 0; fi; \
-		printf "."; sleep 5; \
-	done; \
-	echo ""; \
-	echo "  ⚠ Timed out with Managed Resources still present. Inspect with:"; \
-	echo "      kubectl get managed -A"; \
-	echo "  Re-run 'make drain-crossplane' or pass SKIP_CROSSPLANE=1 to proceed (will leave GCP orphans)."; \
-	exit 1
+	@echo "  ✓ Orphan firewall pass complete"
 
-empty-buckets: ## Empty Crossplane-owned GCS buckets in PROJECT_ID (datasets bucket is force_destroy'd by TF)
+_clean-orphan-iam-bindings: ## Remove project IAM bindings whose principals are 'deleted:' (post-destroy)
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
-	@echo "→ Emptying Crossplane-owned GCS buckets in $(PROJECT_ID)"
-	@BUCKETS=$$(gcloud storage buckets list --project=$(PROJECT_ID) --format="value(name)" \
-		--filter="labels.managed_by=crossplane" 2>/dev/null); \
+	@echo "→ Cleaning ghost IAM bindings (deleted:* members) in $(PROJECT_ID)"
+	@# Past incident (2026-05-07 destroy): after terraform destroyed SAs, their
+	@# project-level IAM bindings remained as "deleted:serviceAccount:...?uid=..."
+	@# entries. These accumulate across deploy/destroy cycles — we observed two
+	@# distinct UIDs for the same SA email after a single re-deploy. Logic in
+	@# platform/scripts/clean-orphan-iam-bindings.py (atomic set-iam-policy).
+	@python3 platform/scripts/clean-orphan-iam-bindings.py $(PROJECT_ID)
+	@echo "  ✓ Ghost IAM bindings cleaned"
+
+empty-buckets: ## Empty Crossplane-owned + TF-managed datasets buckets (defensive — destroy path)
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Emptying buckets in $(PROJECT_ID) (Crossplane-labeled + agent-* prefix + datasets)"
+	@# Past incident (2026-05-07 destroy): the TF-managed `whisperops-datasets`
+	@# bucket blocked terraform destroy because state had force_destroy=false even
+	@# though main.tf set true (state was created before the code change). Emptying
+	@# defensively here makes destroy idempotent regardless of state drift.
+	@# We also catch agent-* Crossplane buckets by name prefix as fallback when the
+	@# `managed_by=crossplane` label is missing or listing is permissions-blocked.
+	@BUCKETS=$$( \
+		( gcloud storage buckets list --project=$(PROJECT_ID) --format="value(name)" \
+			--filter="labels.managed_by=crossplane" 2>/dev/null; \
+		  gcloud storage buckets list --project=$(PROJECT_ID) --format="value(name)" \
+			--filter="name:agent-*" 2>/dev/null; \
+		  echo "$(PROJECT_ID)-datasets" \
+		) | sort -u \
+	); \
 	if [ -z "$$BUCKETS" ]; then \
-		echo "  ↳ No Crossplane-owned buckets found"; \
+		echo "  ↳ No buckets matched cleanup criteria"; \
 		exit 0; \
 	fi; \
 	for b in $$BUCKETS; do \
-		echo "  ↳ Emptying gs://$$b"; \
-		gcloud storage rm --recursive "gs://$$b/**" --project=$(PROJECT_ID) 2>/dev/null || \
-			echo "    (already empty or not accessible)"; \
+		if gcloud storage buckets describe "gs://$$b" --project=$(PROJECT_ID) >/dev/null 2>&1; then \
+			echo "  ↳ Emptying gs://$$b (contents only; terraform destroy or Crossplane finalizer deletes the bucket itself)"; \
+			OBJS=$$(gcloud storage ls "gs://$$b/**" --project=$(PROJECT_ID) 2>/dev/null | head -1); \
+			if [ -n "$$OBJS" ]; then \
+				gcloud storage rm --recursive "gs://$$b/**" --project=$(PROJECT_ID) --quiet 2>&1 | tail -1 || true; \
+			else \
+				echo "    (already empty)"; \
+			fi; \
+		fi; \
 	done
 	@echo "  ✓ Bucket empty pass complete"
 
