@@ -64,6 +64,11 @@ releases:
     # DD-31: postRender strips chart-default AUTOGEN_DISABLE_RUNTIME_TRACING
     # env entry so the final manifest has exactly ONE entry (=false). Requires
     # `yq` on PATH at helmfile-apply time.
+    # DD-64: wait for install to fully complete before helmfile exits. Without
+    # this, helmfile may cache "deployed" even when the OCI pull failed or the
+    # install rolled back silently. timeout matches the kagent nginx timeout.
+    wait: true
+    timeout: 600
     values:
       - /tmp/whisperops/platform/values/kagent-values.yaml
     postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh
