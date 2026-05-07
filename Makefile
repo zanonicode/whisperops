@@ -73,7 +73,11 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply platform-bootstrap ## Full deploy (Phase 1, laptop-side): pre-flight + Terraform + bootstrap Job
+deploy: preflight tf-apply ## Full deploy (Phase 1, laptop-side): pre-flight + Terraform
+	@# platform-bootstrap intentionally NOT a dep here — it runs kubectl against
+	@# the kind cluster INSIDE the VM and is invoked by `_vm-bootstrap` (Phase 2).
+	@# Calling it from Phase 1 would target the operator's local kubectl context
+	@# (typically EKS or another unrelated cluster), not the kind cluster.
 	@echo "✓ Phase 1 complete. Run 'make copy-repo && make deploy-vm' for Phase 2 (inside-VM bring-up)."
 	@echo "  Then run 'make smoke-test' to verify."
 
@@ -88,8 +92,12 @@ tf-apply: tf-init ## Apply Terraform (provisions VM, buckets, IAM)
 
 # ── VM bring-up (DD-34) ────────────────────────────────────────────────────────
 
-copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.yaml, node_modules)
+copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.yaml, node_modules, macOS metadata)
 	@echo "→ Copying repo to whisperops-vm"
+	@# Past incident (2026-05-07 deploy retry): macOS tar emitted AppleDouble
+	@# `._*` metadata files alongside YAMLs in helm chart templates dirs;
+	@# kubectl apply -f then choked with "control characters are not allowed".
+	@# Excluding them keeps the archive clean for Linux consumers.
 	@tar \
 		--exclude='.terraform' \
 		--exclude='.git' \
@@ -97,6 +105,8 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		--exclude='dist' \
 		--exclude='__pycache__' \
 		--exclude='secrets/*.dec.yaml' \
+		--exclude='._*' \
+		--exclude='.DS_Store' \
 		-czf - . | \
 	gcloud compute ssh whisperops-vm --zone=$(ZONE) \
 		--command='mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
@@ -109,6 +119,13 @@ deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
 _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by deploy-vm)
 	@bash -c 'set -euo pipefail; \
 	cd /tmp/whisperops; \
+	# Past incident (2026-05-07 deploy retry): kubectl/helm calls inside this \
+	# target ran with the SSH user default kubeconfig (~/.kube/config which is \
+	# absent for OS-Login users), causing "connection refused 127.0.0.1:8080". \
+	# Exporting KUBECONFIG up-front fixes all subsequent calls in one shot. \
+	export KUBECONFIG=/root/.kube/config; \
+	export HELM_PLUGINS=/usr/local/share/helm/plugins; \
+	export SOPS_AGE_KEY_FILE=/tmp/whisperops/age.key; \
 	echo "→ Deriving VM_IP from GCP metadata server"; \
 	DERIVED_IP=$$(curl -sf -H "Metadata-Flavor: Google" \
 		http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip); \
@@ -116,7 +133,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "→ Rewriting Backstage host references (DD-36)"; \
 	bash platform/scripts/rewrite-backstage-hosts.sh "$$DERIVED_IP"; \
 	echo "→ Applying helmfile (application platform layer)"; \
-	KUBECONFIG=/root/.kube/config helmfile -f platform/helmfile.yaml.gotmpl apply; \
+	helmfile -f platform/helmfile.yaml.gotmpl apply; \
 	# DD-38: Keycloak scale-to-zero disabled — Opção I keeps Keycloak active for OIDC login via tunnel. \
 	# Re-enable when Opção L (custom Backstage image with guest provider) lands. See DESIGN §15 #22. \
 	# bash platform/values/keycloak-postrender.sh \
@@ -147,17 +164,17 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "→ Materializing whisperops-system Namespace + platform-config skeleton (DD-50)"; \
 	kubectl apply -f platform/whisperops-system/platform-config.yaml \
 		|| echo "  ⚠ platform-config.yaml apply failed; bring-up continues"; \
-	echo "→ Deriving registry_url"; \
-	REGISTRY_URL=$$(terraform -chdir=terraform output -raw registry_url 2>/dev/null \
-		|| kubectl get configmap platform-config -n whisperops-system \
-			-o jsonpath='"'"'{.data.registry_url}'"'"' 2>/dev/null || echo ""); \
+	echo "→ Deriving registry_url from GCP metadata (terraform state not available in VM)"; \
+	PROJECT_ID_DERIVED=$$(curl -sf -H "Metadata-Flavor: Google" \
+		http://metadata.google.internal/computeMetadata/v1/project/project-id); \
+	REGISTRY_URL="us-central1-docker.pkg.dev/$${PROJECT_ID_DERIVED}/whisperops-images"; \
 	echo "→ Updating platform-config ConfigMap with live VM IP and registry_url (DD-50)"; \
 	kubectl create configmap platform-config -n whisperops-system \
 		--from-literal=base_domain="$$DERIVED_IP.sslip.io" \
 		--from-literal=registry_url="$$REGISTRY_URL" \
 		--dry-run=client -o yaml | kubectl apply -f -; \
-	echo "→ Running platform-bootstrap Job"; \
-	$(MAKE) platform-bootstrap; \
+	echo "→ Running platform-bootstrap Job (non-fatal — pre-requisites known incomplete)"; \
+	$(MAKE) platform-bootstrap || echo "  ⚠ platform-bootstrap failed; bring-up continues. Fix prereqs (image build + supabase/anthropic/openai secrets) and re-run \`make platform-bootstrap\` standalone."; \
 	echo "✓ VM bring-up complete"'
 
 # ── Teardown (DD-32) ───────────────────────────────────────────────────────────
@@ -327,8 +344,15 @@ empty-buckets: ## Empty Crossplane-owned + TF-managed datasets buckets (defensiv
 # ── Platform bootstrap ─────────────────────────────────────────────────────────
 
 platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profiles → Supabase)
-	kubectl apply -f platform/helm/platform-bootstrap-job/templates/
-	kubectl wait --for=condition=complete job/platform-bootstrap --timeout=300s -n platform
+	@# Past incident (2026-05-07 deploy retry): the previous form here was
+	@# `kubectl apply -f templates/` — but those are Helm templates with
+	@# `{{ .Release.Namespace }}` etc., not rendered K8s manifests. kubectl
+	@# choked on the `{{ }}` syntax. Render via `helm template` first.
+	@kubectl get namespace platform >/dev/null 2>&1 || kubectl create namespace platform
+	@helm template platform-bootstrap platform/helm/platform-bootstrap-job \
+		--namespace=platform \
+		| kubectl apply -n platform -f -
+	@kubectl wait --for=condition=complete job/platform-bootstrap --timeout=300s -n platform
 
 regenerate-profiles: ## Re-run platform-bootstrap to refresh dataset profiles in Supabase
 	kubectl delete job platform-bootstrap -n platform --ignore-not-found

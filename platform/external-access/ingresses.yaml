@@ -87,32 +87,14 @@ spec:
   tls:
     - hosts: [argocd.136.115.224.138.sslip.io]
 ---
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: agent-housing-demo-external
-  namespace: agent-housing-demo
-  annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-spec:
-  ingressClassName: nginx
-  rules:
-    - host: agent-housing-demo.136.115.224.138.sslip.io
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: chat-frontend-housing-demo
-                port:
-                  number: 3000
-  tls:
-    - hosts: [agent-housing-demo.136.115.224.138.sslip.io]
+# (Removed) agent-housing-demo-external Ingress — DD-52 RESOLVED 2026-05-07.
+# Was a leftover from when housing-demo was a baseline component with hardcoded
+# IP. Each agent scaffolded via Backstage now provisions its own external
+# Ingress through the dataset-whisperer template (DD-53:
+# skeleton/manifests/ingress.yaml.njk), so platform-level external-access
+# should only manage PLATFORM ingresses (Backstage, ArgoCD, Grafana, Gitea).
+# Fresh deploy fails here because the agent-housing-demo namespace doesn't
+# exist yet — by design, no agents exist until operator scaffolds.
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress

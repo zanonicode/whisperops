@@ -26,7 +26,7 @@ log "Starting whisperops bootstrap"
 # 1. System packages
 log "Installing system packages"
 apt-get update -qq
-apt-get install -y docker.io git curl jq
+apt-get install -y docker.io git curl jq make
 
 # 2. Docker
 log "Enabling Docker"
@@ -38,6 +38,38 @@ KUBECTL_VERSION="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
 curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o /tmp/kubectl
 install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 rm /tmp/kubectl
+
+# 3a.1. helm + helmfile + sops (needed by _vm-bootstrap Makefile target)
+# Past incident (2026-05-07 deploy retry): _vm-bootstrap calls helmfile + sops
+# but neither was installed on the VM. Each manual install was a separate
+# intervention. Bake them into the startup-script.
+log "Installing helm"
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+log "Installing helmfile"
+HELMFILE_VERSION="$(curl -fsSL https://api.github.com/repos/helmfile/helmfile/releases/latest \
+    | grep -m1 tag_name | sed 's/.*"v\([^"]*\)".*/\1/')"
+curl -fsSL "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" \
+    | tar -xz -C /usr/local/bin helmfile
+chmod +x /usr/local/bin/helmfile
+
+log "Installing sops"
+SOPS_VERSION="$(curl -fsSL https://api.github.com/repos/getsops/sops/releases/latest \
+    | grep -m1 tag_name | sed 's/.*"v\([^"]*\)".*/\1/')"
+curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
+    -o /usr/local/bin/sops
+chmod +x /usr/local/bin/sops
+
+log "Installing helm-diff plugin to /usr/local/share/helm/plugins (system-wide, required by helmfile)"
+# IMPORTANT: install to system-wide location, not $HOME/.local/share/helm/plugins.
+# Past incident (2026-05-07 deploy retry): plugin installed under /root was 700,
+# helmfile invoked by the SSH OS-Login user (e.g. vzanoni_psn_gmail_com) couldn't
+# discover it. Makefile sets HELM_PLUGINS=/usr/local/share/helm/plugins to point
+# helm at this location.
+mkdir -p /usr/local/share/helm/plugins
+HELM_DATA_HOME=/usr/local/share/helm helm plugin install https://github.com/databus23/helm-diff 2>&1 || \
+    log "  helm-diff plugin already installed or failed (non-fatal)"
+chmod -R a+rx /usr/local/share/helm/plugins
 
 # 3b. Download idpBuilder (released as a tarball since v0.10.x)
 log "Downloading idpBuilder ${IDPBUILDER_VERSION}"
@@ -72,6 +104,14 @@ else
 fi
 chown ubuntu:ubuntu /home/ubuntu/.kube/config
 chmod 600 /home/ubuntu/.kube/config
+
+# Make /root/.kube/config readable by the OS-Login SSH user (different per operator).
+# Past incident (2026-05-07): SSH user `vzanoni_psn_gmail_com` could not read
+# /root/.kube/config (mode 600) when invoking helmfile via _vm-bootstrap. Demo
+# cluster — broadening kubeconfig perms is acceptable. For prod, switch to a
+# system-location kubeconfig at /etc/whisperops/kubeconfig.
+chmod 755 /root /root/.kube
+chmod 644 /root/.kube/config
 
 # 6. Wait gate — poll until every ArgoCD app reports Synced AND Healthy.
 #    Surfaces upstream bootstrap failures (e.g. Keycloak config job
