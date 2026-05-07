@@ -13,7 +13,7 @@
   "links": [],
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "currencyUSD" } },
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "id": 1,
@@ -23,7 +23,7 @@
       "targets": [{ "expr": "sum(whisperops_agent_spend_usd)", "legendFormat": "Total" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "unit": "percentunit", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.8 }, { "color": "red", "value": 1.0 }] } } },
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "id": 2,
@@ -33,7 +33,7 @@
       "targets": [{ "expr": "max(whisperops_agent_spend_usd / whisperops_agent_budget_usd)", "legendFormat": "Max burn" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "id": 3,
@@ -43,7 +43,7 @@
       "targets": [{ "expr": "topk(10, sum by (agent_namespace) (whisperops_agent_spend_usd))", "legendFormat": "{{agent_namespace}}" }]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "unit": "currencyUSD", "custom": { "lineWidth": 1 } } },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "id": 4,
@@ -52,6 +52,75 @@
       "type": "timeseries",
       "targets": [
         { "expr": "sum by (agent_namespace) (whisperops_agent_spend_usd)", "legendFormat": "{{agent_namespace}}" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 },
+      "id": 5,
+      "title": "LLM Observability — Langfuse",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "langfuse" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "currencyUSD" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "id": 6,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["sum"] },
+        "showUnfilled": true,
+        "text": {}
+      },
+      "title": "LLM Cost Rollup (current period)",
+      "type": "bargauge",
+      "targets": [
+        {
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "langfuse" },
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "url": "${LANGFUSE_HOST}/api/public/observations?type=generation&limit=500",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "data",
+          "columns": [
+            { "selector": "name", "text": "Agent", "type": "string" },
+            { "selector": "usage.totalCost", "text": "Cost (USD)", "type": "number" }
+          ],
+          "filters": []
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "langfuse" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "id": 7,
+      "options": {
+        "bucketSize": "auto",
+        "fillOpacity": 80,
+        "gradientMode": "none",
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "title": "Score Distribution",
+      "type": "histogram",
+      "targets": [
+        {
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "langfuse" },
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "url": "${LANGFUSE_HOST}/api/public/scores",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "data",
+          "columns": [
+            { "selector": "name", "text": "Score Name", "type": "string" },
+            { "selector": "value", "text": "Value", "type": "number" }
+          ],
+          "filters": []
+        }
       ]
     }
   ],

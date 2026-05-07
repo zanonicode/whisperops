@@ -13,7 +13,7 @@
   "links": [],
   "panels": [
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "id": 1,
@@ -27,7 +27,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 1 } } },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "id": 2,
@@ -41,7 +41,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "mimir" },
+      "datasource": { "type": "prometheus", "uid": "prom" },
       "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "lineWidth": 1 } } },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "id": 3,
@@ -50,6 +50,96 @@
       "type": "timeseries",
       "targets": [
         { "expr": "sum(rate(whisperops_query_errors_total[5m])) by (error_type) / sum(rate(whisperops_query_total[5m]))", "legendFormat": "{{error_type}}" }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 4,
+      "title": "Distributed Tracing — Tempo",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "id": 5,
+      "options": {
+        "reduceOptions": { "calcs": ["p50", "p95"] },
+        "orientation": "auto",
+        "text": {},
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "title": "A2A Hop Latency (p50/p95)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{span.whisperops.agent_role=~\"planner|analyst|writer\"} | select(duration)",
+          "tableType": "spans",
+          "refId": "A",
+          "legendFormat": "{{span.whisperops.agent_role}}"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "id": 6,
+      "options": {
+        "bucketSize": "auto",
+        "fillOpacity": 80,
+        "gradientMode": "none",
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "title": "End-to-End Trace Duration Distribution",
+      "type": "histogram",
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{resource.service.name=~\"agent-.*\"} | select(duration)",
+          "tableType": "spans",
+          "refId": "A",
+          "legendFormat": "duration"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 25 },
+      "id": 7,
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "text": {},
+        "textMode": "auto",
+        "colorMode": "value"
+      },
+      "title": "A2A Span Count per Query (5m window)",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{name=\"A2A invoke\"} | count_over_time(5m)",
+          "refId": "A",
+          "legendFormat": "A2A spans"
+        }
       ]
     }
   ],

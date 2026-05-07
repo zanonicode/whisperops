@@ -455,10 +455,16 @@ The Grafana sidecar auto-loads any ConfigMap labelled `grafana_dashboard: "1"` i
 
 | Dashboard | Datasource(s) | Key panels |
 |---|---|---|
-| **platform-health** | Mimir (`prom`), Loki (`loki`) | Cluster CPU/memory, ArgoCD synced/healthy app count, NGINX p50/p95/p99 latency, cert-manager expiries |
-| **agent-cost** | Infinity (`langfuse`) primary, Tempo (`tempo`) fallback | Total spend per agent (Langfuse REST), per-model token rollup, top-10 agents by cost, daily burn |
-| **agent-performance** | Tempo (`tempo`), Mimir (`prom`) | Query latency p50/p95/p99, A2A hop breakdown (planner→analyst→writer), error rate by error class |
-| **sandbox-execution** | Tempo (`tempo`), Mimir (`prom`) | Concurrent executions, OOM rate, timeout rate, signed-URL upload latency |
+| **platform-health** | Mimir (`prom`), Loki (`loki`) | Cluster CPU/memory, ArgoCD synced/healthy app count, NGINX p50/p95/p99 latency, cert-manager expiries, **Loki cluster error rate** (DD-41) |
+| **agent-cost** | Mimir (`prom`), Infinity (`langfuse`) | Per-agent spend metrics, **Langfuse cost rollups + scores via Infinity REST** (DD-41), top-10 agents by cost, daily burn |
+| **agent-performance** | Mimir (`prom`), Tempo (`tempo`) | Query latency p50/p95/p99, **Tempo TraceQL panels for A2A hops + span latency + per-agent traces** (DD-41), error rate by error class |
+| **sandbox-execution** | Mimir (`prom`), Loki (`loki`) | Concurrent executions, OOM rate, timeout rate, **Loki LogQL panels for sandbox stdout + execution failures** (DD-41), signed-URL upload latency |
+
+> **DD-41 (v0.4):** Originally all panels referenced `"uid": "mimir"` and rendered "Datasource mimir was not found" because the `lgtm-distributed` chart provisions Mimir under stable UID `prom`, not `mimir`. Fix was to rewrite dashboard JSONs to use `prom` (no Helm override needed — chart-default UID is durable). Same pass added 8 new panels (1 Loki, 2 Langfuse Infinity, 3 Tempo, 2 Loki) so each dashboard consumes ≥1 datasource beyond Mimir.
+
+> **Runtime gotchas for Langfuse + Tempo panels (DD-41):**
+> - **`${LANGFUSE_HOST}`** in agent-cost Infinity panels must resolve. Either set it as a dashboard variable under `templating.list`, or configure the Infinity datasource's base URL at provisioning time so `${LANGFUSE_HOST}` is substituted upstream.
+> - **Tempo span-count panel** uses streaming-metric query; renders only if Tempo's metrics-generator is enabled. If not, switch panel `queryType` to `metrics` or disable the panel.
 
 ### Tempo (TraceQL) — `tempo` datasource
 
