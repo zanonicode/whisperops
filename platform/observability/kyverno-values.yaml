@@ -1,24 +1,36 @@
 # Kyverno chart 3.2.6 ships the cleanup CronJobs with image
 # `bitnami/kubectl:1.28.5` which Bitnami removed from public registry,
-# causing ImagePullBackOff every 10min. Pin to a tag that still exists.
+# causing ImagePullBackOff every 10min. Pin to a SIG-managed image with a
+# more durable lifecycle. registry.k8s.io/kubectl is the official SIG
+# release; v1.32.0 is the latest stable 1.32.x at DD-65 build time.
+# Exact values keys verified via `helm show values kyverno/kyverno --version 3.2.6`:
+# cleanupJobs.<name>.image.{registry,repository,tag} — registry defaults to ~
+# (null/unset), so the full image was "bitnami/kubectl:1.28.5". Setting
+# registry: registry.k8s.io + repository: kubectl + tag: v1.32.0 produces
+# "registry.k8s.io/kubectl:v1.32.0" in each CronJob pod spec.
 cleanupJobs:
   admissionReports:
     image:
-      repository: bitnami/kubectl
-      tag: "1.31.2"
+      registry: registry.k8s.io
+      repository: kubectl
+      tag: "v1.32.0"
   clusterAdmissionReports:
     image:
-      repository: bitnami/kubectl
-      tag: "1.31.2"
+      registry: registry.k8s.io
+      repository: kubectl
+      tag: "v1.32.0"
   clusterEphemeralReports:
     image:
-      repository: bitnami/kubectl
-      tag: "1.31.2"
+      registry: registry.k8s.io
+      repository: kubectl
+      tag: "v1.32.0"
   ephemeralReports:
     image:
-      repository: bitnami/kubectl
-      tag: "1.31.2"
+      registry: registry.k8s.io
+      repository: kubectl
+      tag: "v1.32.0"
   updateRequests:
     image:
-      repository: bitnami/kubectl
-      tag: "1.31.2"
+      registry: registry.k8s.io
+      repository: kubectl
+      tag: "v1.32.0"
