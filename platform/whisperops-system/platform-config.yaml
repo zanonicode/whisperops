@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: whisperops-system
+  labels:
+    whisperops.io/managed-by: vm-bootstrap
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  namespace: whisperops-system
+  annotations:
+    # Populated at deploy time by _vm-bootstrap from GCP instance metadata
+    # (external IP). See DD-50 in DESIGN_whisperops.md (v1.22).
+    # The _vm-bootstrap Makefile target applies this manifest then patches
+    # base_domain and registry_url before helmfile apply runs.
+    whisperops.io/managed-by: vm-bootstrap
+data:
+  base_domain: "PLACEHOLDER_FILLED_AT_BOOTSTRAP"
+  registry_url: "PLACEHOLDER_FILLED_AT_BOOTSTRAP"
