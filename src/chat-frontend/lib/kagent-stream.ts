@@ -14,11 +14,27 @@
 //   LLMCallEventMessage             -> skip (raw LLM tracing noise)
 //   unknown / ThoughtEvent          -> skip
 //   task_result event               -> data: [DONE]
+//
+// DD-49 (2026-05-07): split invokeStream into fetchInvokeResponse + processInvokeStream
+//   so route.ts can inspect the HTTP status before building the Response, enabling
+//   session-lifecycle recovery when kagent returns 404 "Session not found".
 
 interface KagentEvent {
   type?: string;
   source?: string;
   content?: unknown;
+}
+
+export class KagentInvokeError extends Error {
+  readonly status: number;
+  readonly bodyText: string;
+
+  constructor(status: number, bodyText: string) {
+    super(`kagent /invoke/stream failed: HTTP ${status} ${bodyText}`);
+    this.name = 'KagentInvokeError';
+    this.status = status;
+    this.bodyText = bodyText;
+  }
 }
 
 function sseBytes(payload: object): Uint8Array {
@@ -27,15 +43,13 @@ function sseBytes(payload: object): Uint8Array {
 
 const DONE_BYTES = new TextEncoder().encode('data: [DONE]\n\n');
 
-export async function invokeStream(
+export async function fetchInvokeResponse(
   kagentBaseUrl: string,
   sessionId: string,
   userId: string,
   task: string,
   teamConfig: unknown,
-  controller: ReadableStreamDefaultController,
-  onChunkCount: (n: number) => void,
-): Promise<void> {
+): Promise<Response> {
   const url = `${kagentBaseUrl}/api/sessions/${sessionId}/invoke/stream?user_id=${encodeURIComponent(userId)}`;
   const upstream = await fetch(url, {
     method: 'POST',
@@ -44,7 +58,18 @@ export async function invokeStream(
   });
   if (!upstream.ok || !upstream.body) {
     const text = await upstream.text().catch(() => '');
-    throw new Error(`kagent /invoke/stream failed: HTTP ${upstream.status} ${text}`);
+    throw new KagentInvokeError(upstream.status, text);
+  }
+  return upstream;
+}
+
+export async function processInvokeStream(
+  upstream: Response,
+  controller: ReadableStreamDefaultController,
+  onChunkCount: (n: number) => void,
+): Promise<void> {
+  if (!upstream.body) {
+    throw new KagentInvokeError(upstream.status, 'no response body');
   }
 
   const reader = upstream.body.getReader();

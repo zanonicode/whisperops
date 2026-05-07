@@ -1,7 +1,7 @@
 import type { NextRequest } from 'next/server';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { getServerTracer } from '../../../lib/server-tracing';
-import { invokeStream } from '../../../lib/kagent-stream';
+import { fetchInvokeResponse, processInvokeStream, KagentInvokeError } from '../../../lib/kagent-stream';
 
 const KAGENT_BASE_URL =
   process.env.KAGENT_BASE_URL ?? 'http://kagent.kagent-system.svc.cluster.local';
@@ -49,6 +49,18 @@ async function createSession(): Promise<string> {
   return body.data.id;
 }
 
+function isSessionNotFound(err: unknown): boolean {
+  return (
+    err instanceof KagentInvokeError &&
+    err.status === 404 &&
+    /session not found/i.test(err.bodyText)
+  );
+}
+
+function sessionCookieValue(sessionId: string): string {
+  return `kagent-session-id=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
+}
+
 function sseChunk(payload: object): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
 }
@@ -77,8 +89,54 @@ export async function POST(req: NextRequest): Promise<Response> {
   let setCookie: string | null = null;
   if (!sessionId) {
     sessionId = await createSession();
-    setCookie = `kagent-session-id=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
+    setCookie = sessionCookieValue(sessionId);
   }
+
+  // Fetch the team config and the upstream invoke response before building the
+  // ReadableStream so that a recoverable 404 can be handled and the Set-Cookie
+  // header can reflect the final session id used.
+  let teamConfig: unknown;
+  let upstream: Response;
+  let recovered = false;
+
+  try {
+    teamConfig = await fetchTeamConfig();
+    upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, message, teamConfig);
+  } catch (err) {
+    if (isSessionNotFound(err)) {
+      span.addEvent('session_recovered_after_404');
+      sessionId = await createSession();
+      setCookie = sessionCookieValue(sessionId);
+      recovered = true;
+      // Let any second failure propagate as a non-recoverable error.
+      upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, message, teamConfig!);
+    } else {
+      const msg = err instanceof Error ? err.message : 'invoke failed';
+      span.setAttribute('session.recovered', false);
+      span.recordException(err instanceof Error ? err : new Error(msg));
+      span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
+      span.end();
+      const errorStream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(sseChunk({ error: msg }));
+          controller.close();
+        },
+      });
+      return new Response(errorStream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        },
+      });
+    }
+  }
+
+  span.setAttribute('session.recovered', recovered);
+
+  const capturedUpstream = upstream!;
+  const capturedSessionId = sessionId;
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -86,17 +144,13 @@ export async function POST(req: NextRequest): Promise<Response> {
       invokeSpan.setAttribute('agent.id', AGENT_NAMESPACE);
       invokeSpan.setAttribute('agent.role', AGENT_NAME);
       invokeSpan.setAttribute('agent.ref', AGENT_REF);
-      invokeSpan.setAttribute('kagent.session_id', sessionId!);
+      invokeSpan.setAttribute('kagent.session_id', capturedSessionId);
       invokeSpan.setAttribute('user.id', USER_ID);
+      invokeSpan.setAttribute('session.recovered', recovered);
       let finalChunkCount = 0;
       try {
-        const teamConfig = await fetchTeamConfig();
-        await invokeStream(
-          KAGENT_BASE_URL,
-          sessionId!,
-          USER_ID,
-          message,
-          teamConfig,
+        await processInvokeStream(
+          capturedUpstream,
           controller,
           (n) => { finalChunkCount = n; },
         );
