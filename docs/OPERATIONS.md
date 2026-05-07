@@ -361,6 +361,21 @@ kubectl get secret -n keycloak keycloak-config -o jsonpath='{.data.USER_PASSWORD
 
 **Future cutover (Opção L)**: rebuild custom Backstage image with `@backstage/plugin-auth-backend-module-guest-provider` + `<SignInPage providers={['guest']} />` in App.tsx. Eliminates tunnel for Backstage UI access. Tracked as §15 #22.
 
+### Templates sourcing (DD-40)
+
+Backstage's catalog reads from a single Gitea repo: `idpbuilder-localdev-backstage-templates-entities` at `https://cnoe.localtest.me:8443/gitea/giteaAdmin/...`. The whisperops `dataset-whisperer` template lives at `platform/idp/backstage-templates/entities/dataset-whisperer/` in this repo, and is automatically synced to Gitea by `make _vm-bootstrap` (DD-34) — the sync step clones the Gitea repo, rsyncs `entities/`, commits, and pushes.
+
+**Adding new templates**: drop a new `template.yaml` under `platform/idp/backstage-templates/entities/<name>/`, update `entities/catalog-info.yaml` to register a Location, and re-run `make copy-repo && make deploy-vm`. Backstage detects the new template within ~60 seconds.
+
+**Manual force-sync** (if catalog refresh is slow or you skipped `_vm-bootstrap`): see the equivalent shell block in the `_vm-bootstrap` target of the Makefile.
+
+**Backstage refresh trigger** (force immediate reload):
+```bash
+sudo kubectl --kubeconfig=/root/.kube/config rollout restart deployment/backstage -n backstage
+```
+
+After scaffolding via the Backstage UI (`Create` -> choose `dataset-whisperer`), Backstage pushes a new Gitea repo for the agent and creates an ArgoCD Application that syncs the agent's manifests.
+
 ### Accessing Backstage
 
 ```

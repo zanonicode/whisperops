@@ -119,6 +119,26 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	# DD-38: Keycloak scale-to-zero disabled — Opção I keeps Keycloak active for OIDC login via tunnel. \
 	# Re-enable when Opção L (custom Backstage image with guest provider) lands. See DESIGN §15 #22. \
 	# bash platform/values/keycloak-postrender.sh \
+	echo "→ Syncing Backstage templates to Gitea (DD-40)"; \
+	{ \
+	    GITEA_PASS=$$(kubectl get secret -n gitea gitea-credential -o jsonpath="{.data.password}" | base64 -d); \
+	    kubectl port-forward -n gitea svc/my-gitea-http 13000:3000 >/dev/null 2>&1 & PF_PID=$$!; \
+	    trap "kill $$PF_PID 2>/dev/null" EXIT INT TERM; \
+	    sleep 2; \
+	    REPO_DIR=$$(mktemp -d); \
+	    git clone "http://giteaAdmin:$${GITEA_PASS}@127.0.0.1:13000/giteaAdmin/idpbuilder-localdev-backstage-templates-entities.git" "$$REPO_DIR" 2>&1 | tail -3; \
+	    rsync -a --delete platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
+	    cd "$$REPO_DIR"; \
+	    git -c user.email=ci@whisperops.io -c user.name=whisperops-ci add .; \
+	    if git diff --cached --quiet; then \
+	        echo "  ↳ No template changes to push"; \
+	    else \
+	        git -c user.email=ci@whisperops.io -c user.name=whisperops-ci commit -m "DD-40: sync from whisperops repo"; \
+	        git push origin main 2>&1 | tail -3 && echo "  ✓ Templates synced to Gitea"; \
+	    fi; \
+	    cd - >/dev/null; rm -rf "$$REPO_DIR"; \
+	    kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
+	} || echo "  ⚠ DD-40 Gitea sync failed; bring-up continues"; \
 	echo "→ Materializing langfuse-credentials Secret"; \
 	$(MAKE) langfuse-secret; \
 	echo "→ Regenerating external Ingresses"; \
