@@ -1,5 +1,7 @@
 image:
-  repository: gitea.local/whisperops/platform-bootstrap
+  # DD-14: GCP Artifact Registry. DD-66: fixed from stale gitea.local path.
+  # REPLACE_PROJECT_ID is substituted at helm template time via --set in _vm-bootstrap.
+  repository: us-central1-docker.pkg.dev/REPLACE_PROJECT_ID/whisperops-images/platform-bootstrap
   pullPolicy: IfNotPresent
   tag: "latest"
 
