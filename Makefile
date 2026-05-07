@@ -7,7 +7,8 @@
         empty-buckets drain-crossplane \
         upload-datasets decrypt-secrets \
         lint lint-python lint-ts lint-helm lint-terraform \
-        copy-repo deploy-vm _vm-bootstrap \
+        copy-repo build-images deploy-vm _vm-bootstrap \
+        _push-whisperops-to-gitea \
         _drop-argo-workflows-crds \
         _clean-orphan-iam-bindings _clean-orphan-firewalls
 
@@ -124,6 +125,12 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		--command='mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
 
+build-images: ## Build whisperops container images on the VM and push to Artifact Registry (DD-66)
+	@echo "→ Building whisperops images on whisperops-vm"
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) \
+		--command='cd /tmp/whisperops && bash scripts/build-images.sh'
+	@echo "  ✓ Image build complete"
+
 deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
 	@# Past incident (2026-05-07 chained deploy): copy-repo only waits for SSH:22,
 	@# but the VM's startup-script keeps running afterwards: it installs helmfile,
@@ -195,6 +202,9 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    cd - >/dev/null; rm -rf "$$REPO_DIR"; \
 	    kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
 	} || echo "  ⚠ DD-40 Gitea sync failed; bring-up continues"; \
+	echo "→ Pushing whisperops repo to Gitea + applying ArgoCD root-app (DD-63)"; \
+	$(MAKE) _push-whisperops-to-gitea \
+		|| echo "  ⚠ DD-63 Gitea push failed; bring-up continues — ArgoCD will not sync platform apps until resolved"; \
 	echo "→ Materializing langfuse-credentials Secret"; \
 	$(MAKE) langfuse-secret; \
 	echo "→ Regenerating external Ingresses"; \
@@ -212,8 +222,65 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 		--from-literal=registry_url="$$REGISTRY_URL" \
 		--dry-run=client -o yaml | kubectl apply -f -; \
 	echo "→ Running platform-bootstrap Job (non-fatal — pre-requisites known incomplete)"; \
-	$(MAKE) platform-bootstrap || echo "  ⚠ platform-bootstrap failed; bring-up continues. Fix prereqs (image build + supabase/anthropic/openai secrets) and re-run \`make platform-bootstrap\` standalone."; \
+	kubectl get namespace platform >/dev/null 2>&1 || kubectl create namespace platform; \
+	helm template platform-bootstrap platform/helm/platform-bootstrap-job \
+		--namespace=platform \
+		--set "image.repository=$${REGISTRY_URL}/platform-bootstrap" \
+		| kubectl apply -n platform -f - \
+		|| echo "  ⚠ platform-bootstrap apply failed; bring-up continues. Fix prereqs and re-run \`make platform-bootstrap\` standalone."; \
 	echo "✓ VM bring-up complete"'
+
+_push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo, apply ArgoCD root-app (run inside VM)
+	@bash -c 'set -euo pipefail; \
+	cd /tmp/whisperops; \
+	export KUBECONFIG=/root/.kube/config; \
+	echo "  ↳ Resolving Gitea admin password"; \
+	GITEA_PASS=$$(kubectl get secret -n gitea gitea-credential -o jsonpath="{.data.password}" | base64 -d); \
+	echo "  ↳ Port-forwarding Gitea on 13001:3000"; \
+	kubectl port-forward -n gitea svc/my-gitea-http 13001:3000 >/dev/null 2>&1 & PF_PID=$$!; \
+	trap "kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM" EXIT INT TERM; \
+	sleep 3; \
+	GITEA_URL="http://127.0.0.1:13001"; \
+	GITEA_AUTH="giteaAdmin:$${GITEA_PASS}"; \
+	echo "  ↳ Creating Gitea org '\''whisperops'\'' (idempotent)"; \
+	HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" \
+		-X POST "$${GITEA_URL}/api/v1/orgs" \
+		-H "Content-Type: application/json" \
+		-u "$${GITEA_AUTH}" \
+		-d '{"username":"whisperops","visibility":"public"}'); \
+	if [ "$$HTTP_CODE" = "201" ]; then \
+		echo "  ✓ Org whisperops created"; \
+	elif [ "$$HTTP_CODE" = "422" ]; then \
+		echo "  ↳ Org whisperops already exists — skipping"; \
+	else \
+		echo "  ✗ Org creation returned HTTP $$HTTP_CODE — aborting DD-63"; exit 1; \
+	fi; \
+	echo "  ↳ Creating Gitea repo '\''whisperops/whisperops'\'' (idempotent)"; \
+	HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" \
+		-X POST "$${GITEA_URL}/api/v1/orgs/whisperops/repos" \
+		-H "Content-Type: application/json" \
+		-u "$${GITEA_AUTH}" \
+		-d '{"name":"whisperops","private":false,"auto_init":true,"default_branch":"main"}'); \
+	if [ "$$HTTP_CODE" = "201" ]; then \
+		echo "  ✓ Repo whisperops/whisperops created"; \
+	elif [ "$$HTTP_CODE" = "409" ]; then \
+		echo "  ↳ Repo whisperops/whisperops already exists — skipping creation"; \
+	else \
+		echo "  ✗ Repo creation returned HTTP $$HTTP_CODE — aborting DD-63"; exit 1; \
+	fi; \
+	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
+	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS}@127.0.0.1:13001/whisperops/whisperops.git"; \
+	git -C /tmp/whisperops remote remove gitea-push 2>/dev/null || true; \
+	git -C /tmp/whisperops remote add gitea-push "$${PUSH_REMOTE}"; \
+	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
+		push gitea-push HEAD:main --force 2>&1 | tail -5; \
+	git -C /tmp/whisperops remote remove gitea-push 2>/dev/null || true; \
+	echo "  ✓ Repo pushed to Gitea"; \
+	kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
+	echo "  ↳ Applying ArgoCD root-app (app-of-apps)"; \
+	kubectl apply -f /tmp/whisperops/platform/argocd/bootstrap/root-app.yaml; \
+	echo "  ✓ root-app applied — ArgoCD will register 8 child apps and sync from whisperops/whisperops.git"; \
+	echo "  Note: initial sync may take 2-5 min; check with: kubectl get app -n argocd"'
 
 # ── Teardown (DD-32) ───────────────────────────────────────────────────────────
 # Order matters: Crossplane Managed Resources must be drained BEFORE Terraform
