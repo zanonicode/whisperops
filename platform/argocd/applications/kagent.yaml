@@ -8,7 +8,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://kagent-dev.github.io/kagent
+    repoURL: oci://ghcr.io/kagent-dev/kagent/helm
     chart: kagent
     targetRevision: "0.4.3"
     helm:
