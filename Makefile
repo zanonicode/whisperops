@@ -218,7 +218,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    sleep 2; \
 	    REPO_DIR=$$(mktemp -d); \
 	    git clone "http://giteaAdmin:$${GITEA_PASS}@127.0.0.1:13000/giteaAdmin/idpbuilder-localdev-backstage-templates-entities.git" "$$REPO_DIR" 2>&1 | tail -3; \
-	    rsync -a --delete platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
+	    rsync -a --delete --exclude='._*' --exclude='.DS_Store' platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
 	    cd "$$REPO_DIR"; \
 	    git -c user.email=ci@whisperops.io -c user.name=whisperops-ci add .; \
 	    if git diff --cached --quiet; then \
