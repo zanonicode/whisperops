@@ -44,6 +44,15 @@ GOOGLE_CREDS = os.getenv(
 _TRANSPORT = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 mcp = FastMCP("sandbox", streamable_http_path="/", transport_security=_TRANSPORT)
 
+# DD-104: kagent's tool registry has UNIQUE constraint on tool.name globally
+# (not scoped per-ToolServer). Multiple agents each exposing `execute_python`
+# from their own sandbox MCP collide on the second registration. Namespace
+# the tool name per agent so all N agents can register concurrently.
+# AGENT_NAME is injected by sandbox.yaml.njk via Backstage scaffolder.
+# Hyphens replaced with underscores since some MCP/kagent paths reject them.
+_AGENT_NAME = os.getenv("AGENT_NAME", "default").replace("-", "_")
+_TOOL_NAME = f"execute_python_{_AGENT_NAME}"
+
 
 _PRELUDE = """
 import json, sys, os
@@ -115,7 +124,7 @@ def _upload_pngs(tmp_dir: Path) -> list[str]:
         return []
 
 
-@mcp.tool()
+@mcp.tool(name=_TOOL_NAME)
 def execute_python(code: str) -> str:
     """Run Python in a sandboxed subprocess against this agent's dataset.
 

@@ -38,6 +38,11 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            # DD-104: AGENT_NAME used by mcp_server.py to namespace its tool
+            # name (`execute_python_<agent>`) so kagent's UNIQUE-on-tool.name
+            # constraint doesn't reject the 2nd+ agent's sandbox registration.
+            - name: AGENT_NAME
+              value: "${{ values.agent_name }}"
             - name: DATASET_ID
               value: "${{ values.dataset_id }}"
             - name: AGENT_BUCKET

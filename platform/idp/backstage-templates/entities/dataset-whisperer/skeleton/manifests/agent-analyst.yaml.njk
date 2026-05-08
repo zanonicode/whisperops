@@ -37,7 +37,10 @@ spec:
       mcpServer:
         toolServer: sandbox
         toolNames:
-          - execute_python
+          # DD-104: per-agent namespaced tool name (set in mcp_server.py).
+          # Hyphens replaced with underscores since some MCP/kagent paths
+          # reject hyphens in tool names.
+          - execute_python_${{ values.agent_name | replace("-", "_") }}
   a2aConfig:
     skills:
       - id: dataset-analysis
