@@ -270,9 +270,8 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 		echo "  ✗ Repo creation returned HTTP $$HTTP_CODE — aborting DD-63"; exit 1; \
 	fi; \
 	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
-	# Gitea admin password contains URL-reserved chars (e.g. {][:/!*&}); embedding \
-	# raw breaks git's URL parser. URL-encode via jq @uri (memory observation 1533). \
-	# python3 was tried first but `safe=''` triggers bash-c single-quote parser issues. \
+	# URL-encode Gitea password via jq @uri (memory observation 1533): admin \
+	# password contains URL-reserved chars; embedding raw breaks git URL parser. \
 	GITEA_PASS_ENC=$$(printf %s "$${GITEA_PASS}" | jq -sRr @uri); \
 	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13001/whisperops/whisperops.git"; \
 	# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh \
