@@ -365,6 +365,7 @@ destroy: ## Tear down EVERYTHING: drain Crossplane → empty buckets → terrafo
 	$(MAKE) _clean-orphan-firewalls PROJECT_ID=$(PROJECT_ID)
 	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=envs/demo/terraform.tfvars -auto-approve
 	$(MAKE) _clean-orphan-iam-bindings PROJECT_ID=$(PROJECT_ID)
+	$(MAKE) _clean-orphan-buckets PROJECT_ID=$(PROJECT_ID)
 	@echo "✓ Teardown complete."
 
 _drop-argo-workflows-crds: ## Drop Argo Workflows CRDs from the VM-side kind cluster (idempotent)
@@ -460,6 +461,24 @@ _clean-orphan-iam-bindings: ## Remove project IAM bindings whose principals are 
 	@# platform/scripts/clean-orphan-iam-bindings.py (atomic set-iam-policy).
 	@python3 platform/scripts/clean-orphan-iam-bindings.py $(PROJECT_ID)
 	@echo "  ✓ Ghost IAM bindings cleaned"
+
+_clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLANE=1 bypasses Crossplane drain (DD-94)
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Deleting orphan agent-* GCS buckets in $(PROJECT_ID) (DD-94)"
+	@# When make destroy SKIP_CROSSPLANE=1 FORCE=1 is used (gotcha #3 recovery
+	@# for stuck Crossplane finalizers), Crossplane is not drained and its GCS
+	@# Bucket CRs are never finalized. The buckets remain in GCP after VM teardown.
+	@# empty-buckets catches these too, but only empties them — it does not delete
+	@# the bucket itself (deletion is left to Crossplane or terraform). With
+	@# Crossplane gone, this target is the only cleanup path. No-op if no agent-*
+	@# buckets exist (gcloud returns empty; the while loop body never runs).
+	@gcloud storage buckets list --project=$(PROJECT_ID) --format='value(name)' \
+		--filter='name:agent-*' 2>/dev/null \
+		| while read -r bucket; do \
+			echo "  ↳ Deleting orphan Crossplane bucket: gs://$$bucket"; \
+			gcloud storage rm -r "gs://$$bucket" --project=$(PROJECT_ID) 2>/dev/null || true; \
+		done
+	@echo "  ✓ Orphan agent-* bucket pass complete"
 
 empty-buckets: ## Empty Crossplane-owned + TF-managed datasets buckets (defensive — destroy path)
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)

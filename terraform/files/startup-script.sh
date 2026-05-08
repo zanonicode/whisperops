@@ -15,7 +15,7 @@ IDPBUILDER_ARCH="linux-amd64"
 IDP_PACKAGE_URL="https://github.com/zanonicode/whisperops//platform/idp"
 
 # Maximum time to wait for all ArgoCD apps to become Synced/Healthy.
-PLATFORM_READY_TIMEOUT=900
+PLATFORM_READY_TIMEOUT=1500
 
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*" | tee -a "${LOGFILE}"

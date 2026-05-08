@@ -365,7 +365,7 @@ spec:
   secretStoreRef:
     name: keycloak
     kind: ClusterSecretStore
-  refreshInterval: "0"
+  refreshInterval: "30s"
   target:
     name: backstage-env-vars
     template:
