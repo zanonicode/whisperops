@@ -248,7 +248,7 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 		-X POST "$${GITEA_URL}/api/v1/orgs" \
 		-H "Content-Type: application/json" \
 		-u "$${GITEA_AUTH}" \
-		-d '{"username":"whisperops","visibility":"public"}'); \
+		-d '\''{"username":"whisperops","visibility":"public"}'\''); \
 	if [ "$$HTTP_CODE" = "201" ]; then \
 		echo "  ✓ Org whisperops created"; \
 	elif [ "$$HTTP_CODE" = "422" ]; then \
@@ -261,7 +261,7 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 		-X POST "$${GITEA_URL}/api/v1/orgs/whisperops/repos" \
 		-H "Content-Type: application/json" \
 		-u "$${GITEA_AUTH}" \
-		-d '{"name":"whisperops","private":false,"auto_init":true,"default_branch":"main"}'); \
+		-d '\''{"name":"whisperops","private":false,"auto_init":true,"default_branch":"main"}'\''); \
 	if [ "$$HTTP_CODE" = "201" ]; then \
 		echo "  ✓ Repo whisperops/whisperops created"; \
 	elif [ "$$HTTP_CODE" = "409" ]; then \
