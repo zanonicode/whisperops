@@ -40,6 +40,7 @@ spec:
     - title: Platform routing
       required:
         - base_domain
+        - project_id
       properties:
         base_domain:
           title: Base domain
@@ -50,6 +51,18 @@ spec:
             Run: kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}
             to retrieve the current platform value populated by vm-bootstrap (DD-50).
           pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}\.sslip\.io$|^[a-z0-9.-]+\.[a-z]{2,}$'
+        project_id:
+          title: GCP project ID
+          type: string
+          description: >
+            Target GCP project for Crossplane-managed resources (Bucket,
+            ServiceAccount, IAM bindings) and Artifact Registry image refs.
+            Defaults to "whisperops" — the only project the platform supports today.
+            Without this, IAM bindings render with empty `project:` field
+            (HTTP 404 on `:getIamPolicy`) and image refs become
+            `us-central1-docker.pkg.dev//whisperops-images/...` (double slash).
+          default: whisperops
+          pattern: '^[a-z][a-z0-9-]{4,28}[a-z0-9]$'
 
     - title: Dataset & Model Configuration
       required:
