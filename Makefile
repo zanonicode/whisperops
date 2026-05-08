@@ -271,8 +271,9 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 	fi; \
 	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
 	# Gitea admin password contains URL-reserved chars (e.g. {][:/!*&}); embedding \
-	# raw breaks git's URL parser. URL-encode via python3. (memory observation 1533) \
-	GITEA_PASS_ENC=$$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$${GITEA_PASS}"); \
+	# raw breaks git's URL parser. URL-encode via jq @uri (memory observation 1533). \
+	# python3 was tried first but `safe=''` triggers bash-c single-quote parser issues. \
+	GITEA_PASS_ENC=$$(printf %s "$${GITEA_PASS}" | jq -sRr @uri); \
 	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13001/whisperops/whisperops.git"; \
 	# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh \
 	# snapshot repo here so we can push to Gitea. ArgoCD only needs HEAD content, \
