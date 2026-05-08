@@ -22,7 +22,8 @@ spec:
                 secretName: gcp-bootstrap-sa-key
           containers:
             - name: token-rotate
-              image: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+              # DD-99: see seed-job.yaml — slim lacks kubectl. Use :latest.
+              image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
               command:
                 - /bin/bash
                 - -c
