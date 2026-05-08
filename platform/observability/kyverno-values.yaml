@@ -14,23 +14,33 @@ cleanupJobs:
       registry: registry.k8s.io
       repository: kubectl
       tag: "v1.32.0"
+    podSecurityContext:
+      runAsNonRoot: false
   clusterAdmissionReports:
     image:
       registry: registry.k8s.io
       repository: kubectl
       tag: "v1.32.0"
+    podSecurityContext:
+      runAsNonRoot: false
   clusterEphemeralReports:
     image:
       registry: registry.k8s.io
       repository: kubectl
       tag: "v1.32.0"
+    podSecurityContext:
+      runAsNonRoot: false
   ephemeralReports:
     image:
       registry: registry.k8s.io
       repository: kubectl
       tag: "v1.32.0"
+    podSecurityContext:
+      runAsNonRoot: false
   updateRequests:
     image:
       registry: registry.k8s.io
       repository: kubectl
       tag: "v1.32.0"
+    podSecurityContext:
+      runAsNonRoot: false

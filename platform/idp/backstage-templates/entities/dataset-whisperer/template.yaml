@@ -87,12 +87,14 @@ spec:
           description: >
             Model for the Analyst and Writer roles. Planner is always claude-haiku-4-5-20251001.
           enum:
+            - claude-sonnet-4-5-20250929
+            - claude-sonnet-4-6
             - claude-haiku-4-5-20251001
-            - claude-sonnet-4-5-20251001
           enumNames:
-            - Claude Haiku (fast, economical)
-            - Claude Sonnet (higher quality, 10x cost)
-          default: claude-haiku-4-5-20251001
+            - Claude Sonnet 4.5 (stable GA, recommended)
+            - Claude Sonnet 4.6 (latest)
+            - Claude Haiku 4.5 (fast, economical)
+          default: claude-sonnet-4-5-20250929
         budget_usd:
           title: Budget (USD)
           type: string
@@ -148,4 +150,4 @@ spec:
       - title: Agent Repository
         url: ${{ steps['publish-gitea'].output.remoteUrl }}
       - title: Chat UI
-        url: https://${{ parameters.agent_name }}.${{ parameters.base_domain }}
+        url: https://agent-${{ parameters.agent_name }}.${{ parameters.base_domain }}:8443/
