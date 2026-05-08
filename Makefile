@@ -271,12 +271,20 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 	fi; \
 	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
 	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS}@127.0.0.1:13001/whisperops/whisperops.git"; \
-	git -C /tmp/whisperops remote remove gitea-push 2>/dev/null || true; \
-	git -C /tmp/whisperops remote add gitea-push "$${PUSH_REMOTE}"; \
+	# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh \
+	# snapshot repo here so we can push to Gitea. ArgoCD only needs HEAD content, \
+	# not history. This is destructive on /tmp/whisperops/.git but that dir is \
+	# transient (rebuilt every copy-repo run). \
+	rm -rf /tmp/whisperops/.git; \
+	git -C /tmp/whisperops init -q -b main; \
 	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
-		push gitea-push HEAD:main --force 2>&1 | tail -5; \
+		add -A; \
+	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
+		commit -q -m "whisperops snapshot for ArgoCD reconciliation (DD-63)"; \
+	git -C /tmp/whisperops remote add gitea-push "$${PUSH_REMOTE}"; \
+	git -C /tmp/whisperops push gitea-push main:main --force 2>&1 | tail -5; \
 	git -C /tmp/whisperops remote remove gitea-push 2>/dev/null || true; \
-	echo "  ✓ Repo pushed to Gitea"; \
+	echo "  ✓ Repo snapshot pushed to Gitea"; \
 	kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
 	echo "  ↳ Applying ArgoCD root-app (app-of-apps)"; \
 	kubectl apply -f /tmp/whisperops/platform/argocd/bootstrap/root-app.yaml; \
