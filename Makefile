@@ -7,7 +7,7 @@
         empty-buckets drain-crossplane \
         upload-datasets decrypt-secrets \
         lint lint-python lint-ts lint-helm lint-terraform \
-        copy-repo build-images deploy-vm _vm-bootstrap \
+        copy-repo gcp-bootstrap-key build-images deploy-vm _vm-bootstrap \
         _push-whisperops-to-gitea \
         _drop-argo-workflows-crds \
         _clean-orphan-iam-bindings _clean-orphan-firewalls
@@ -65,7 +65,10 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
 		|| (echo "  ✗ SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
 	@echo "  ✓ SOPS_AGE_KEY_FILE points at a readable key"
-	@for f in anthropic openai supabase langfuse crossplane-gcp-creds; do \
+	@# DD-74: crossplane-gcp-creds.enc.yaml deprecated — SA key now generated \
+	@# fresh per deploy via `make gcp-bootstrap-key` (was stale on every \
+	@# destroy+create cycle since SA recreation invalidates the encrypted key). \
+	@for f in anthropic openai supabase langfuse; do \
 		[ -f $(SECRETS_DIR)/$$f.enc.yaml ] && grep -q '^sops:' $(SECRETS_DIR)/$$f.enc.yaml \
 			|| (echo "  ✗ secrets/$$f.enc.yaml missing or unencrypted" && exit 1); \
 	done
@@ -74,7 +77,7 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply copy-repo build-images deploy-vm ## Full deploy: preflight → tf-apply → copy-repo → build-images → deploy-vm
+deploy: preflight tf-apply copy-repo gcp-bootstrap-key build-images deploy-vm ## Full deploy: preflight → tf-apply → copy-repo → gcp-bootstrap-key → build-images → deploy-vm
 	@# Rollup target — invokes the full chain. Each sub-target is independently
 	@# runnable for debugging (e.g. `make build-images` alone after a code change).
 	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
@@ -125,6 +128,30 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 	gcloud compute ssh whisperops-vm --zone=$(ZONE) \
 		--command='mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
+
+gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply as Secret in crossplane-system
+	@# tf-apply destroys + recreates the bootstrap SA on every deploy cycle, which
+	@# wipes any previously-issued keys. The previous design encrypted a key in
+	@# secrets/crossplane-gcp-creds.enc.yaml — that file goes stale every cycle
+	@# (key id mismatch -> "invalid_grant: Invalid JWT Signature" on Crossplane
+	@# providers, blocking all GCP-backed agent scaffolds). Fix: generate a fresh
+	@# key on each deploy from the operator's authenticated gcloud session, scp
+	@# to the VM, and apply directly as the Secret the ProviderConfig already
+	@# references. No SOPS, no ExternalSecret, no stale state.
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Materializing whisperops-bootstrap SA key as gcp-bootstrap-sa-key Secret"
+	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
+	 gcloud iam service-accounts keys create $$TMPF \
+		--iam-account=whisperops-bootstrap@$(PROJECT_ID).iam.gserviceaccount.com \
+		--project=$(PROJECT_ID) 2>&1 | tail -1; \
+	 gcloud compute scp $$TMPF whisperops-vm:/tmp/gcp-bootstrap-key.json --zone=$(ZONE) >/dev/null; \
+	 gcloud compute ssh whisperops-vm --zone=$(ZONE) --command=' \
+		sudo kubectl get namespace crossplane-system >/dev/null 2>&1 || sudo kubectl create namespace crossplane-system; \
+		sudo kubectl create secret generic gcp-bootstrap-sa-key -n crossplane-system \
+			--from-file=credentials.json=/tmp/gcp-bootstrap-key.json \
+			--dry-run=client -o yaml | sudo kubectl apply -f -; \
+		rm -f /tmp/gcp-bootstrap-key.json' >/dev/null
+	@echo "  ✓ gcp-bootstrap-sa-key Secret applied in crossplane-system"
 
 build-images: ## Build whisperops container images on the VM and push to Artifact Registry (DD-66)
 	@echo "→ Building whisperops images on whisperops-vm"
