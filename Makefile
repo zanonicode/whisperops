@@ -146,6 +146,22 @@ gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply 
 	@# references. No SOPS, no ExternalSecret, no stale state.
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Materializing whisperops-bootstrap SA key as gcp-bootstrap-sa-key Secret"
+	@# DD-97: gcp-bootstrap-key runs ~T+2min after VM creation, but cloud-init is
+	@# still installing /usr/local/bin/kubectl AND setting up sudo NOPASSWD at that
+	@# point. Without this poll, DD-80's set -e correctly aborts on either
+	@# "sudo: a password is required" or "kubectl: command not found" — but that
+	@# breaks the deploy chain. Mirror copy-repo's SSH:22 poll pattern: wait up to
+	@# 5 min for cloud-init to ready the toolchain we need.
+	@echo "  ↳ Waiting for cloud-init to ready kubectl + sudo NOPASSWD (up to 5 min)"
+	@for i in $$(seq 1 60); do \
+		if gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
+		     --command='sudo -n /usr/local/bin/kubectl version --client' \
+		     >/dev/null 2>&1; then \
+			echo ""; echo "  ✓ VM ready (kubectl + sudo NOPASSWD)"; break; \
+		fi; \
+		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ Cloud-init not ready after 5 min — inspect /var/log/syslog on VM"; exit 1; fi; \
+		printf "."; sleep 5; \
+	done
 	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
 	 gcloud iam service-accounts keys create $$TMPF \
 		--iam-account=whisperops-bootstrap@$(PROJECT_ID).iam.gserviceaccount.com \
