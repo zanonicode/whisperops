@@ -22,13 +22,15 @@ spec:
           - resources:
               kinds:
                 - Agent
-              group: kagent.dev
               namespaceSelector:
                 matchExpressions:
                   - key: kubernetes.io/metadata.name
-                    operator: Regexp
-                    values:
-                      - "^agent-.*"
+                    operator: Exists
+      preconditions:
+        any:
+          - key: "{{`{{starts_with(request.object.metadata.namespace, 'agent-')}}`}}"
+            operator: Equals
+            value: "true"
       validate:
         message: >-
           Agent CRD must have a whisperops.io/budget-usd annotation

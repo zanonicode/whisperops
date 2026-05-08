@@ -20,12 +20,11 @@ spec:
           - resources:
               kinds:
                 - Pod
-              namespaceSelector:
-                matchExpressions:
-                  - key: kubernetes.io/metadata.name
-                    operator: Regexp
-                    values:
-                      - "^agent-.*"
+      preconditions:
+        any:
+          - key: "{{`{{starts_with(request.object.metadata.namespace, 'agent-')}}`}}"
+            operator: Equals
+            value: "true"
       validate:
         message: "All containers must have CPU and memory limits set."
         pattern:
