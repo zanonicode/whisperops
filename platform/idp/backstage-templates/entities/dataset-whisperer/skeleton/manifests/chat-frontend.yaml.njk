@@ -29,7 +29,10 @@ spec:
       containers:
         - name: chat-frontend
           image: us-central1-docker.pkg.dev/${{ values.project_id }}/whisperops-images/chat-frontend:latest
-          imagePullPolicy: IfNotPresent
+          # DD-106: see sandbox.yaml.njk — :latest + IfNotPresent caches first
+          # pull and never re-pulls on rebuilds. Always-pull until images move
+          # to immutable content-hash tags.
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 3000
