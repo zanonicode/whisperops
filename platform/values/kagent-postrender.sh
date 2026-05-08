@@ -19,7 +19,18 @@
 # Idempotent.
 set -euo pipefail
 
-python3 - "$@" <<'PYEOF'
+# Past incident (2026-05-08, DD-71 chase): the previous form was
+#   python3 - "$@" <<'PYEOF' ... PYEOF
+# but heredoc redirection consumes stdin, leaving nothing for sys.stdin.read()
+# to receive. Helm post-renderer protocol pipes the rendered manifest to stdin
+# via the bash script's own stdin — so this collision produced an EMPTY
+# rendered output (3 lines instead of 3852). Helmfile then installed the
+# empty release as "deployed" — kagent had a helm-secret record but zero
+# actual resources in the cluster. Fix: write the python script to a temp
+# file first; stdin then stays available for the helm-rendered YAML.
+TMP_PY=$(mktemp --suffix=.py)
+trap 'rm -f "$TMP_PY"' EXIT
+cat > "$TMP_PY" <<'PYEOF'
 import sys
 import re
 
@@ -95,3 +106,5 @@ for raw in docs_raw:
 
 print('---'.join(out_docs), end='')
 PYEOF
+
+python3 "$TMP_PY"
