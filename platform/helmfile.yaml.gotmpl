@@ -109,7 +109,7 @@ releases:
     # 600s timeout reverts to 60s default.
     # postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh
 
-  # DD-75: Reflector mirrors ar-pull-secret-source (crossplane-system) to all
+  # DD-75: Reflector mirrors ar-pull-secret (crossplane-system) to all
   # agent-* namespaces automatically. Must be up before the first agent scaffold.
   - name: reflector
     namespace: reflector-system

@@ -22,7 +22,7 @@ spec:
                 secretName: gcp-bootstrap-sa-key
           containers:
             - name: token-rotate
-              image: google/cloud-sdk:slim
+              image: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
               command:
                 - /bin/bash
                 - -c
@@ -36,11 +36,11 @@ spec:
                   DOCKERCFG=$(printf \
                     '{"auths":{"%s":{"username":"oauth2accesstoken","password":"%s","auth":"%s"}}}' \
                     "$REGISTRY" "$TOKEN" "$AUTH" | base64 -w0)
-                  kubectl patch secret ar-pull-secret-source \
+                  kubectl patch secret ar-pull-secret \
                     -n crossplane-system \
                     --type=merge \
                     -p "{\"data\":{\".dockerconfigjson\":\"$DOCKERCFG\"}}"
-                  echo "ar-pull-secret-source rotated at $(date -u)"
+                  echo "ar-pull-secret rotated at $(date -u)"
               volumeMounts:
                 - name: gcp-creds
                   mountPath: /etc/gcp-creds
