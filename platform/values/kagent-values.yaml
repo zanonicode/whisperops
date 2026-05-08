@@ -14,6 +14,19 @@
 #   templates/deployment.yaml: container `app` declares `env:` with chart-default
 #   vars, then `{{- with .Values.app.env }}{{- toYaml . | nindent 12 }}{{- end }}`
 #   which appends additional env vars verbatim.
+# DD-73 (2026-05-08): Set default provider to anthropic so the querydoc
+# container only mounts kagent-anthropic (optional) rather than kagent-openai
+# (non-optional by chart default). Without this, querydoc fails
+# CreateContainerConfigError because kagent-openai secret is absent.
+# apiKeySecretRef points at the same secret bootstrap populates for DD-20.
+providers:
+  default: anthropic
+  anthropic:
+    provider: Anthropic
+    model: "claude-sonnet-4-5"
+    apiKeySecretRef: anthropic-api-key
+    apiKeySecretKey: api-key
+
 app:
   env:
     - name: ANTHROPIC_API_KEY

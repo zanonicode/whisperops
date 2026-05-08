@@ -52,18 +52,44 @@ releases:
     values:
       - /tmp/whisperops/platform/observability/otel-collector-values.yaml
 
+  # DD-73 option-C (2026-05-08): kagent chart v0.4.3 bundles CRDs in
+  # templates/ alongside CRs, causing a CRD/CR ordering race on first install.
+  # A separate kagent-crds chart exists at the same version and contains all
+  # five CRDs (agents, memories, modelconfigs, teams, toolservers). Install it
+  # first; the main kagent release lists it in `needs:` so helmfile guarantees
+  # ordering. The `--server-side` equivalent is handled by helm install itself;
+  # `wait: true` on the CRD release ensures Established condition before kagent.
+  - name: kagent-crds
+    namespace: kagent-system
+    createNamespace: true
+    chart: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds
+    version: "0.4.3"
+    wait: true
+    timeout: 120
+
   - name: kagent
     namespace: kagent-system
     createNamespace: true
     chart: oci://ghcr.io/kagent-dev/kagent/helm/kagent
     version: "0.4.3"
+    needs:
+      - kagent-system/kagent-crds
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: bash
+        args:
+          - -c
+          - |
+            # The kagent chart hardcodes namespace: kagent on the grafana ToolServer
+            # (templates/toolserver-grafana.yaml). That namespace must exist before
+            # helm install attempts to create the resource or the install fails with
+            # "namespaces kagent not found". kubectl apply is idempotent on re-deploy.
+            sudo kubectl create namespace kagent --dry-run=client -o yaml | sudo kubectl apply -f -
     # DD-20: declarative ANTHROPIC_API_KEY env var on `app` container.
     # The Secret `anthropic-api-key` (key `api-key`) must exist in the
     # kagent-system namespace BEFORE this release reconciles — bootstrap
     # populates it from SOPS-decrypted secrets/anthropic.enc.yaml.
-    # DD-31: postRender strips chart-default AUTOGEN_DISABLE_RUNTIME_TRACING
-    # env entry so the final manifest has exactly ONE entry (=false). Requires
-    # `yq` on PATH at helmfile-apply time.
     # DD-64: wait for install to fully complete before helmfile exits. Without
     # this, helmfile may cache "deployed" even when the OCI pull failed or the
     # install rolled back silently. timeout matches the kagent nginx timeout.

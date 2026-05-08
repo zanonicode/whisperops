@@ -13,6 +13,7 @@ metadata:
       upstream registries are allowed. Gitea container registry is not in
       the allowlist. This prevents supply-chain attacks via untrusted image
       sources.
+    pod-policies.kyverno.io/autogen-controllers: none
 spec:
   validationFailureAction: Enforce
   background: true
