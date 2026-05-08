@@ -152,14 +152,18 @@ gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply 
 	@# "sudo: a password is required" or "kubectl: command not found" — but that
 	@# breaks the deploy chain. Mirror copy-repo's SSH:22 poll pattern: wait up to
 	@# 5 min for cloud-init to ready the toolchain we need.
-	@echo "  ↳ Waiting for cloud-init to ready kubectl + sudo NOPASSWD (up to 5 min)"
-	@for i in $$(seq 1 60); do \
+	@echo "  ↳ Waiting for cloud-init to ready kubectl + sudo NOPASSWD (up to 20 min)"
+	@# DD-97 followup: 5min was too short. Cloud-init order is: apt-get install
+	@# docker (DD-98 retries can take up to 15min) → install kubectl → setup sudoers.
+	@# Budget must accommodate worst-case apt retries + kubectl install + sudoers.
+	@# 20min = 240 iterations × 5s. Aligns with DD-95's 1500s cloud-init budget.
+	@for i in $$(seq 1 240); do \
 		if gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
 		     --command='sudo -n /usr/local/bin/kubectl version --client' \
 		     >/dev/null 2>&1; then \
 			echo ""; echo "  ✓ VM ready (kubectl + sudo NOPASSWD)"; break; \
 		fi; \
-		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ Cloud-init not ready after 5 min — inspect /var/log/syslog on VM"; exit 1; fi; \
+		if [ "$$i" = "240" ]; then echo ""; echo "  ✗ Cloud-init not ready after 20 min — inspect /var/log/syslog on VM"; exit 1; fi; \
 		printf "."; sleep 5; \
 	done
 	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
