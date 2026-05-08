@@ -74,13 +74,14 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply ## Full deploy (Phase 1, laptop-side): pre-flight + Terraform
-	@# platform-bootstrap intentionally NOT a dep here — it runs kubectl against
-	@# the kind cluster INSIDE the VM and is invoked by `_vm-bootstrap` (Phase 2).
-	@# Calling it from Phase 1 would target the operator's local kubectl context
-	@# (typically EKS or another unrelated cluster), not the kind cluster.
-	@echo "✓ Phase 1 complete. Run 'make copy-repo && make deploy-vm' for Phase 2 (inside-VM bring-up)."
-	@echo "  Then run 'make smoke-test' to verify."
+deploy: preflight tf-apply copy-repo build-images deploy-vm ## Full deploy: preflight → tf-apply → copy-repo → build-images → deploy-vm
+	@# Rollup target — invokes the full chain. Each sub-target is independently
+	@# runnable for debugging (e.g. `make build-images` alone after a code change).
+	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
+	@# wait) make the chain robust against tf-apply→VM-ready and idpbuilder timing.
+	@# platform-bootstrap is invoked INSIDE _vm-bootstrap, not here — it must run
+	@# against the kind cluster on the VM, not the operator's local kubectl context.
+	@echo "✓ Deploy complete. Run 'make smoke-test' to verify."
 
 tf-init: ## Initialise Terraform backend
 	terraform -chdir=$(TERRAFORM_DIR) init -backend-config=envs/demo/backend.tfvars
