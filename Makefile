@@ -2,7 +2,7 @@
 .PHONY: help preflight deploy destroy smoke-test \
         tf-init tf-plan tf-apply \
         platform-bootstrap regenerate-profiles \
-        ar-pull-secret langfuse-secret \
+        langfuse-secret \
         external-ingresses \
         empty-buckets drain-crossplane \
         upload-datasets decrypt-secrets \
@@ -501,27 +501,6 @@ platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profil
 regenerate-profiles: ## Re-run platform-bootstrap to refresh dataset profiles in Supabase
 	kubectl delete job platform-bootstrap -n platform --ignore-not-found
 	$(MAKE) platform-bootstrap
-
-# ── Artifact Registry pull secret (DD-14) ──────────────────────────────────────
-# Token from `gcloud auth print-access-token` expires every ~60 minutes; re-run
-# whenever chat-frontend / sandbox pods land in ImagePullBackOff.
-
-ar-pull-secret: ## Create/refresh Artifact Registry imagePullSecret in all agent namespaces
-	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set. Usage: make ar-pull-secret PROJECT_ID=<id>" && exit 1)
-	@REGISTRY="$(REGION)-docker.pkg.dev"; \
-	TOKEN=$$(gcloud auth print-access-token); \
-	NS_LIST=$$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | grep '^agent-' || true); \
-	if [ -z "$$NS_LIST" ]; then echo "  ↳ No agent-* namespaces found yet (scaffold one via Backstage first)"; exit 0; fi; \
-	for NS in $$NS_LIST; do \
-		kubectl create secret docker-registry ar-pull-secret \
-			--namespace=$$NS \
-			--docker-server=$$REGISTRY \
-			--docker-username=oauth2accesstoken \
-			--docker-password=$$TOKEN \
-			--dry-run=client -o yaml | kubectl apply -f -; \
-		echo "  ✓ imagePullSecret refreshed in $$NS"; \
-	done
-	@echo "Token expires in ~60 minutes. Re-run 'make ar-pull-secret' to refresh."
 
 # ── Langfuse credentials (DD-29) ───────────────────────────────────────────────
 # SOPS-decrypts secrets/langfuse.enc.yaml → langfuse-credentials Secret in

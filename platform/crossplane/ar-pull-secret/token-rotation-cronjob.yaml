@@ -1,0 +1,50 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ar-token-rotator
+  namespace: crossplane-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "8"
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ar-token-rotator
+          restartPolicy: OnFailure
+          volumes:
+            - name: gcp-creds
+              secret:
+                secretName: gcp-bootstrap-sa-key
+          containers:
+            - name: token-rotate
+              image: google/cloud-sdk:slim
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  gcloud auth activate-service-account \
+                    --key-file=/etc/gcp-creds/credentials.json
+                  TOKEN=$(gcloud auth print-access-token)
+                  REGISTRY="us-central1-docker.pkg.dev"
+                  AUTH=$(printf "oauth2accesstoken:%s" "$TOKEN" | base64 -w0)
+                  DOCKERCFG=$(printf \
+                    '{"auths":{"%s":{"username":"oauth2accesstoken","password":"%s","auth":"%s"}}}' \
+                    "$REGISTRY" "$TOKEN" "$AUTH" | base64 -w0)
+                  kubectl patch secret ar-pull-secret-source \
+                    -n crossplane-system \
+                    --type=merge \
+                    -p "{\"data\":{\".dockerconfigjson\":\"$DOCKERCFG\"}}"
+                  echo "ar-pull-secret-source rotated at $(date -u)"
+              volumeMounts:
+                - name: gcp-creds
+                  mountPath: /etc/gcp-creds
+                  readOnly: true
+              env:
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: /etc/gcp-creds/credentials.json
