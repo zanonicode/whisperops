@@ -26,7 +26,25 @@ log "Starting whisperops bootstrap"
 # 1. System packages
 log "Installing system packages"
 apt-get update -qq
-apt-get install -y docker.io git curl jq make
+# DD-98: Ubuntu mirror flakes — specific .deb downloads can stall mid-stream
+# (TCP ESTABLISHED but zero bytes flowing) for 15+ minutes. apt's built-in
+# retry doesn't catch stalled connections, only failed connects. Wrap in a
+# bounded retry loop that refreshes metadata and retries up to 3 times.
+# Past incident: 2026-05-08 v1.33 acceptance attempt #2, containerd .deb
+# stuck mid-download for 17+ minutes, cloud-init never advanced past this line.
+for attempt in 1 2 3; do
+    if apt-get install -y docker.io git curl jq make; then
+        log "apt-get install succeeded on attempt $attempt"
+        break
+    fi
+    log "apt-get install failed on attempt $attempt/3 — refreshing metadata, retry in 30s"
+    sleep 30
+    apt-get update -qq || true
+    if [ "$attempt" = "3" ]; then
+        log "ERROR: apt-get install of base packages failed after 3 attempts"
+        exit 1
+    fi
+done
 
 # 2. Docker
 log "Enabling Docker"
