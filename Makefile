@@ -270,7 +270,10 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 		echo "  ✗ Repo creation returned HTTP $$HTTP_CODE — aborting DD-63"; exit 1; \
 	fi; \
 	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
-	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS}@127.0.0.1:13001/whisperops/whisperops.git"; \
+	# Gitea admin password contains URL-reserved chars (e.g. {][:/!*&}); embedding \
+	# raw breaks git's URL parser. URL-encode via python3. (memory observation 1533) \
+	GITEA_PASS_ENC=$$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$${GITEA_PASS}"); \
+	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13001/whisperops/whisperops.git"; \
 	# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh \
 	# snapshot repo here so we can push to Gitea. ArgoCD only needs HEAD content, \
 	# not history. This is destructive on /tmp/whisperops/.git but that dir is \
