@@ -29,7 +29,25 @@ echo "  PROJECT_ID=${PROJECT_ID}"
 echo "  REGISTRY=${REGISTRY}"
 echo "  GIT_SHA=${GIT_SHA}"
 
-gcloud auth configure-docker "${REGISTRY_REGION}-docker.pkg.dev" --quiet
+# Past incident (2026-05-08 chained make deploy): when build-images runs straight
+# after copy-repo in the rolled-up `make deploy` target, the VM's startup-script
+# may still be installing+starting docker. SSH:22 is ready in 2-3s but dockerd
+# socket appears 30-60s later (after `apt install docker.io && systemctl start
+# docker`). Without this poll, all builds fail with
+#   "dial unix /var/run/docker.sock: connect: no such file or directory"
+# Wait up to 5 min for `docker info` to succeed before proceeding.
+echo "  ↳ Waiting for Docker daemon (up to 5 min)"
+for i in $(seq 1 60); do
+    if sudo docker info >/dev/null 2>&1; then
+        echo "  ✓ Docker daemon ready"
+        break
+    fi
+    if [ "$i" = "60" ]; then echo "  ✗ Docker daemon not ready after 5 min"; exit 1; fi
+    printf "."
+    sleep 5
+done
+
+sudo gcloud auth configure-docker "${REGISTRY_REGION}-docker.pkg.dev" --quiet
 
 # Each entry: "image-name:dockerfile-path:build-context-path"
 # All paths relative to REPO_ROOT.
@@ -61,13 +79,13 @@ for ENTRY in "${IMAGES[@]}"; do
 
     echo "  ↳ Building ${NAME} (context=${BUILD_CONTEXT_REL})"
 
-    if docker build \
+    if sudo docker build \
         -t "${TAG_LATEST}" \
         -t "${TAG_SHA}" \
         -f "${DOCKERFILE_ABS}" \
         "${BUILD_CONTEXT_ABS}" 2>&1; then
-        docker push "${TAG_LATEST}" 2>&1
-        docker push "${TAG_SHA}" 2>&1
+        sudo docker push "${TAG_LATEST}" 2>&1
+        sudo docker push "${TAG_SHA}" 2>&1
         echo "  ✓ ${NAME} pushed as :latest and :${GIT_SHA}"
     else
         echo "  ✗ ${NAME} build FAILED"
