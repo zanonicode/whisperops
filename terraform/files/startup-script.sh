@@ -67,6 +67,20 @@ curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/s
     -o /usr/local/bin/sops
 chmod +x /usr/local/bin/sops
 
+log "Installing yq"
+# Required by DD-31 kagent-postrender.sh (helmfile postRenderer that strips a
+# duplicated AUTOGEN_DISABLE_RUNTIME_TRACING env entry). Without yq on PATH, the
+# postRenderer fails silently during `helmfile apply`, helmfile records kagent
+# as "deployed" in its state but the actual helm install never runs — cluster
+# ends up with zero kagent pods, zero kagent.dev CRDs (memory observation:
+# DD-64 fix-B `wait: true` does not catch this because the postRenderer
+# returns 0 even when yq is missing). Pin matches the same version style as
+# helmfile/sops above.
+YQ_VERSION="4.45.1"
+curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
+    -o /usr/local/bin/yq
+chmod +x /usr/local/bin/yq
+
 log "Installing helm-diff plugin to /usr/local/share/helm/plugins (system-wide, required by helmfile)"
 # IMPORTANT: install to system-wide location, not $HOME/.local/share/helm/plugins.
 # Past incident (2026-05-07 deploy retry): plugin installed under /root was 700,
