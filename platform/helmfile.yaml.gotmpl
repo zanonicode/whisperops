@@ -71,4 +71,12 @@ releases:
     timeout: 600
     values:
       - /tmp/whisperops/platform/values/kagent-values.yaml
-    postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh
+    # DD-72 (2026-05-08): kagent-postrender.sh disabled. Two latent bugs:
+    # (1) heredoc-stdin clobbered helm's piped manifest -> empty output (fixed
+    # in commits 6f22f17/a17edd0); (2) the DD-31+DD-47 regex injection then
+    # produces invalid YAML at ~line 126 (helmfile sync error: "did not find
+    # expected key"). Until the regex is rewritten with proper YAML parsing,
+    # disabled so kagent installs cleanly. Loss: AUTOGEN_DISABLE_RUNTIME_TRACING
+    # has TWO env entries (kubelet last-wins, DD-31 narrative); DD-47 nginx
+    # 600s timeout reverts to 60s default.
+    # postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh
