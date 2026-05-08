@@ -1,16 +1,16 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: crossplane-providers
+  name: crossplane-provider-config
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   project: default
   source:
     repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/whisperops/whisperops.git
     targetRevision: HEAD
-    path: platform/crossplane/providers
+    path: platform/crossplane/provider-config
   destination:
     server: https://kubernetes.default.svc
     namespace: crossplane-system
