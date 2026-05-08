@@ -28,7 +28,7 @@ set -euo pipefail
 # empty release as "deployed" — kagent had a helm-secret record but zero
 # actual resources in the cluster. Fix: write the python script to a temp
 # file first; stdin then stays available for the helm-rendered YAML.
-TMP_PY=$(mktemp --suffix=.py)
+TMP_PY=$(mktemp -t kagent-postrender.XXXXXX)
 trap 'rm -f "$TMP_PY"' EXIT
 cat > "$TMP_PY" <<'PYEOF'
 import sys
