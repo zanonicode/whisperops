@@ -16,7 +16,7 @@ spec:
     # at giteaAdmin/agent-{name}; K8s manifests live in manifests/ (DD-53).
     # catalog-info.yaml stays at the repo root for Backstage catalog discovery
     # and is invisible to ArgoCD because it only watches the manifests/ path.
-    repoURL: https://gitea.gitea.svc.cluster.local:3000/giteaAdmin/agent-${{ values.agent_name }}.git
+    repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/giteaAdmin/agent-${{ values.agent_name }}.git
     targetRevision: HEAD
     path: manifests
     directory:
