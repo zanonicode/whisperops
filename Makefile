@@ -588,7 +588,7 @@ upload-datasets: ## Upload all CSVs from datasets/ to the shared GCS datasets bu
 	@BUCKET="$(PROJECT_ID)-datasets"; \
 	echo "→ Syncing $(DATASETS_DIR)/*.csv → gs://$$BUCKET/ (skips unchanged files)"; \
 	gcloud storage rsync --checksums-only $(DATASETS_DIR)/ gs://$$BUCKET/ \
-		--include="*.csv" \
+		--exclude=".*DS_Store.*" \
 		&& echo "✓ Datasets synced to gs://$$BUCKET"
 
 # ── Secrets ────────────────────────────────────────────────────────────────────
