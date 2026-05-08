@@ -8,7 +8,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: http://gitea.gitea.svc.cluster.local/whisperops/whisperops.git
+    repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/whisperops/whisperops.git
     targetRevision: HEAD
     path: platform/helm/agent-prompts
     helm:
