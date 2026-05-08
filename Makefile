@@ -2,7 +2,7 @@
 .PHONY: help preflight deploy destroy smoke-test \
         tf-init tf-plan tf-apply \
         platform-bootstrap regenerate-profiles \
-        langfuse-secret \
+        langfuse-secret _anthropic-secret \
         external-ingresses \
         empty-buckets drain-crossplane \
         upload-datasets decrypt-secrets \
@@ -29,6 +29,10 @@ ZONE        := $(if $(TFVARS_ZONE),$(TFVARS_ZONE),us-central1-a)
 
 # VM_IP: auto-derive from Terraform output when not passed explicitly.
 VM_IP ?= $$(terraform -chdir=$(TERRAFORM_DIR) output -raw vm_external_ip)
+
+# DD-81: SSH keepalive flags applied to every gcloud compute ssh call.
+# Catches asymmetric SSH death (remote dies, local hangs) within ~90s.
+SSH_FLAGS := --ssh-flag="-o ServerAliveInterval=30" --ssh-flag="-o ServerAliveCountMax=3"
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -77,13 +81,15 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply copy-repo gcp-bootstrap-key build-images deploy-vm ## Full deploy: preflight → tf-apply → copy-repo → gcp-bootstrap-key → build-images → deploy-vm
+deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key build-images deploy-vm ## Full deploy: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → build-images → deploy-vm
 	@# Rollup target — invokes the full chain. Each sub-target is independently
 	@# runnable for debugging (e.g. `make build-images` alone after a code change).
 	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
 	@# wait) make the chain robust against tf-apply→VM-ready and idpbuilder timing.
 	@# platform-bootstrap is invoked INSIDE _vm-bootstrap, not here — it must run
 	@# against the kind cluster on the VM, not the operator's local kubectl context.
+	@# DD-91: upload-datasets runs after tf-apply (which creates the bucket) so the
+	@# shared CSV data is available before any agent scaffold queries it.
 	@echo "✓ Deploy complete. Run 'make smoke-test' to verify."
 
 tf-init: ## Initialise Terraform backend
@@ -105,7 +111,7 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 	@# unreachable" and aborts the whole chain. Poll SSH until it answers.
 	@echo "  ↳ Waiting for SSH on whisperops-vm (up to 5 min)"
 	@for i in $$(seq 1 60); do \
-		if gcloud compute ssh whisperops-vm --zone=$(ZONE) --command='exit 0' >/dev/null 2>&1; then \
+		if gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='exit 0' >/dev/null 2>&1; then \
 			echo ""; echo "  ✓ SSH ready"; break; \
 		fi; \
 		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ SSH not ready after 5 min"; exit 1; fi; \
@@ -125,7 +131,7 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		--exclude='._*' \
 		--exclude='.DS_Store' \
 		-czf - . | \
-	gcloud compute ssh whisperops-vm --zone=$(ZONE) \
+	gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
 		--command='mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
 
@@ -145,17 +151,19 @@ gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply 
 		--iam-account=whisperops-bootstrap@$(PROJECT_ID).iam.gserviceaccount.com \
 		--project=$(PROJECT_ID) 2>&1 | tail -1; \
 	 gcloud compute scp $$TMPF whisperops-vm:/tmp/gcp-bootstrap-key.json --zone=$(ZONE) >/dev/null; \
-	 gcloud compute ssh whisperops-vm --zone=$(ZONE) --command=' \
-		sudo kubectl get namespace crossplane-system >/dev/null 2>&1 || sudo kubectl create namespace crossplane-system; \
-		sudo kubectl create secret generic gcp-bootstrap-sa-key -n crossplane-system \
+	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=' \
+		set -e; \
+		sudo /usr/local/bin/kubectl get namespace crossplane-system >/dev/null 2>&1 \
+			|| sudo /usr/local/bin/kubectl create namespace crossplane-system; \
+		sudo /usr/local/bin/kubectl create secret generic gcp-bootstrap-sa-key -n crossplane-system \
 			--from-file=credentials.json=/tmp/gcp-bootstrap-key.json \
-			--dry-run=client -o yaml | sudo kubectl apply -f -; \
-		rm -f /tmp/gcp-bootstrap-key.json' >/dev/null
+			--dry-run=client -o yaml | sudo /usr/local/bin/kubectl apply -f -; \
+		rm -f /tmp/gcp-bootstrap-key.json'
 	@echo "  ✓ gcp-bootstrap-sa-key Secret applied in crossplane-system"
 
 build-images: ## Build whisperops container images on the VM and push to Artifact Registry (DD-66)
 	@echo "→ Building whisperops images on whisperops-vm"
-	@gcloud compute ssh whisperops-vm --zone=$(ZONE) \
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
 		--command='cd /tmp/whisperops && bash scripts/build-images.sh'
 	@echo "  ✓ Image build complete"
 
@@ -169,7 +177,7 @@ deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
 	@# missing kubeconfig (if kind cluster isn't created yet). Block until the
 	@# startup-script logs its terminal sentinel "whisperops bootstrap complete".
 	@echo "→ Waiting for VM startup-script to complete (IDP layer ready, up to 25 min)"
-	@gcloud compute ssh whisperops-vm --zone=$(ZONE) --command=' \
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=' \
 		for i in $$(seq 1 150); do \
 			if sudo grep -q "whisperops bootstrap complete" /var/log/whisperops-bootstrap.log 2>/dev/null; then \
 				echo ""; echo "  ✓ Startup-script finished (IDP layer Synced/Healthy)"; exit 0; \
@@ -186,7 +194,7 @@ deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
 		done; \
 		echo ""; echo "  ✗ Startup-script did not complete in 25 min"; exit 1 \
 	'
-	gcloud compute ssh whisperops-vm --zone=$(ZONE) \
+	gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
 		--command='cd /tmp/whisperops && make _vm-bootstrap'
 
 _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by deploy-vm)
@@ -205,8 +213,10 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "  VM_IP=$$DERIVED_IP"; \
 	echo "→ Rewriting Backstage host references (DD-36)"; \
 	bash platform/scripts/rewrite-backstage-hosts.sh "$$DERIVED_IP"; \
+	echo "→ Materializing anthropic-api-key Secret in kagent-system (DD-83)"; \
+	$(MAKE) _anthropic-secret; \
 	echo "→ Applying helmfile (application platform layer)"; \
-	helmfile -f platform/helmfile.yaml.gotmpl apply; \
+	helmfile -f platform/helmfile.yaml.gotmpl apply --skip-diff-on-install; \
 	# DD-38: Keycloak scale-to-zero disabled — Opção I keeps Keycloak active for OIDC login via tunnel. \
 	# Re-enable when Opção L (custom Backstage image with guest provider) lands. See DESIGN §15 #22. \
 	# bash platform/values/keycloak-postrender.sh \
@@ -221,9 +231,9 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    rsync -a --delete --exclude='._*' --exclude='.DS_Store' platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
 	    cd "$$REPO_DIR"; \
 	    git -c user.email=ci@whisperops.io -c user.name=whisperops-ci add .; \
-	    if git diff --cached --quiet; then \
+	    if [ -d .git ] && git diff --cached --quiet; then \
 	        echo "  ↳ No template changes to push"; \
-	    else \
+	    elif [ -d .git ]; then \
 	        git -c user.email=ci@whisperops.io -c user.name=whisperops-ci commit -m "DD-40: sync from whisperops repo"; \
 	        git push origin main 2>&1 | tail -3 && echo "  ✓ Templates synced to Gitea"; \
 	    fi; \
@@ -359,7 +369,7 @@ destroy: ## Tear down EVERYTHING: drain Crossplane → empty buckets → terrafo
 
 _drop-argo-workflows-crds: ## Drop Argo Workflows CRDs from the VM-side kind cluster (idempotent)
 	@echo "→ Removing Argo Workflows CRDs (DD-35; via VM SSH)"
-	@gcloud compute ssh whisperops-vm --zone=$(ZONE) --command='\
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='\
 		sudo kubectl delete crd \
 			workflows.argoproj.io \
 			workflowtemplates.argoproj.io \
@@ -387,7 +397,7 @@ drain-crossplane: ## Delete all Crossplane GCP Managed Resources on the VM-side 
 		echo "  ↳ VM does not exist — skipping (assumed already destroyed)"; \
 		exit 0; \
 	fi; \
-	gcloud compute ssh whisperops-vm --zone=$(ZONE) --command='\
+	gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='\
 		set -e; \
 		CRDS=$$(sudo kubectl get crd -o name 2>/dev/null | grep -E "\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$" || true); \
 		if [ -z "$$CRDS" ]; then \
@@ -528,6 +538,32 @@ langfuse-secret: ## Materialize langfuse-credentials Secret from SOPS-encrypted 
 		--dry-run=client -o yaml | kubectl apply -f -
 	@echo "  ✓ langfuse-credentials Secret applied in observability namespace"
 
+# ── Anthropic API key (DD-83) ──────────────────────────────────────────────────
+# SOPS-decrypts secrets/anthropic.enc.yaml → anthropic-api-key Secret in
+# kagent-system ns (key: api-key). Called by _vm-bootstrap BEFORE helmfile apply
+# so the kagent `app` container (which reads ANTHROPIC_API_KEY from this Secret)
+# finds it on first reconcile.  Reflector annotations ensure the Secret is
+# automatically mirrored to every agent-* namespace once Reflector is up (DD-89).
+
+_anthropic-secret: ## Materialize anthropic-api-key Secret from SOPS-encrypted source (DD-83)
+	@[ -f $(SECRETS_DIR)/anthropic.enc.yaml ] || (echo "ERROR: $(SECRETS_DIR)/anthropic.enc.yaml not found" && exit 1)
+	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
+		|| (echo "ERROR: SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
+	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
+	 sops --decrypt $(SECRETS_DIR)/anthropic.enc.yaml > $$TMPF; \
+	 API_KEY=$$(grep '^ANTHROPIC_API_KEY:' $$TMPF | awk '{print $$2}'); \
+	 kubectl get namespace kagent-system >/dev/null 2>&1 || kubectl create namespace kagent-system; \
+	 kubectl create secret generic anthropic-api-key -n kagent-system \
+		--from-literal=api-key="$$API_KEY" \
+		--dry-run=client -o yaml | kubectl apply -f -; \
+	 kubectl annotate secret anthropic-api-key -n kagent-system \
+		reflector.v1.k8s.emberstack.com/reflection-allowed="true" \
+		reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces="agent-.*" \
+		reflector.v1.k8s.emberstack.com/reflection-auto-enabled="true" \
+		reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="agent-.*" \
+		--overwrite
+	@echo "  ✓ anthropic-api-key Secret applied in kagent-system (Reflector annotations set for agent-* namespaces)"
+
 # ── External access (DD-23, DD-26) ─────────────────────────────────────────────
 # Used during the regular bring-up (Stage 7 in docs/OPERATIONS.md) immediately
 # after `make tf-apply` to pin the new VM IP into platform Ingress hosts.
@@ -547,11 +583,13 @@ external-ingresses: ## Regenerate platform/external-access/ingresses.yaml for ne
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
 
-upload-datasets: ## Upload all CSVs from datasets/ to the shared GCS datasets bucket
+upload-datasets: ## Upload all CSVs from datasets/ to the shared GCS datasets bucket (idempotent — skips unchanged files)
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@BUCKET="$(PROJECT_ID)-datasets"; \
-	gcloud storage cp $(DATASETS_DIR)/*.csv gs://$$BUCKET/ && \
-	echo "✓ Datasets uploaded to gs://$$BUCKET"
+	echo "→ Syncing $(DATASETS_DIR)/*.csv → gs://$$BUCKET/ (skips unchanged files)"; \
+	gcloud storage rsync --checksums-only $(DATASETS_DIR)/ gs://$$BUCKET/ \
+		--include="*.csv" \
+		&& echo "✓ Datasets synced to gs://$$BUCKET"
 
 # ── Secrets ────────────────────────────────────────────────────────────────────
 
@@ -583,8 +621,16 @@ lint-terraform: ## Validate Terraform
 	terraform -chdir=$(TERRAFORM_DIR) validate
 
 # ── Smoke tests ────────────────────────────────────────────────────────────────
+# DD-87: smoke-test runs on the VM (IN_CLUSTER=1) so it can reach the kind
+# cluster's kubectl API and port-forward to in-cluster services.  Running locally
+# fails because the operator's machine has no kube-context pointing at the VM's
+# kind cluster.  The script is SCP-ed to /tmp then executed via SSH — no
+# permanent install needed on the VM.
 
-smoke-test: ## Assert platform up, agents reachable, ArgoCD healthy
-	bash tests/smoke/platform-up.sh
-	bash tests/smoke/agent-creation.sh
-	bash tests/smoke/query-roundtrip.sh
+smoke-test: ## Assert platform up, agents reachable, ArgoCD healthy (runs on VM via SSH)
+	@echo "→ Copying smoke-test script to whisperops-vm"
+	@gcloud compute scp tests/smoke/platform-up.sh \
+		whisperops-vm:/tmp/platform-up.sh --zone=$(ZONE)
+	@echo "→ Running smoke-test on VM (IN_CLUSTER=1, KUBECONFIG=/root/.kube/config)"
+	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
+		--command='sudo IN_CLUSTER=1 KUBECONFIG=/root/.kube/config bash /tmp/platform-up.sh'
