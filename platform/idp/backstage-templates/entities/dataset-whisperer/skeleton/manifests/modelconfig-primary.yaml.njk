@@ -7,7 +7,10 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   provider: Anthropic
-  model: ${{ values.primary_model }}
+  # DD-107: Hardcoded — Haiku 4.5 is not function-call-capable in autogen v0.4.3 (DD-16).
+  # Remove this comment and reintroduce a dropdown only when autogen registry classifies
+  # additional models as function-calling-capable.
+  model: claude-sonnet-4-5-20250929
   apiKeySecretRef: anthropic-api-key
   apiKeySecretKey: api-key
   anthropic:

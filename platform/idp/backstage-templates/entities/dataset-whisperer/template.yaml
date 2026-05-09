@@ -38,36 +38,29 @@ spec:
           maxLength: 200
 
     - title: Platform routing
-      required:
-        - base_domain
-        - project_id
       properties:
         base_domain:
           title: Base domain
           type: string
           description: >
-            Hostname suffix for the agent's chat URL. Format:
-            `<vm-external-ip>.sslip.io` (e.g. `136.115.224.138.sslip.io`).
-            Run: kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}
-            to retrieve the current platform value populated by vm-bootstrap (DD-50).
+            Hostname suffix for the agent's chat URL. Auto-populated by
+            _vm-bootstrap sed-bake from current VM IP (DD-105). Do not modify.
+          default: "__BASE_DOMAIN__"
           pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}\.sslip\.io$|^[a-z0-9.-]+\.[a-z]{2,}$'
+          ui:widget: hidden
         project_id:
           title: GCP project ID
           type: string
           description: >
-            Target GCP project for Crossplane-managed resources (Bucket,
-            ServiceAccount, IAM bindings) and Artifact Registry image refs.
-            Defaults to "whisperops" — the only project the platform supports today.
-            Without this, IAM bindings render with empty `project:` field
-            (HTTP 404 on `:getIamPolicy`) and image refs become
-            `us-central1-docker.pkg.dev//whisperops-images/...` (double slash).
-          default: whisperops
+            Target GCP project for Crossplane-managed resources. Auto-populated
+            by _vm-bootstrap sed-bake (DD-105). Do not modify.
+          default: "__PROJECT_ID__"
           pattern: '^[a-z][a-z0-9-]{4,28}[a-z0-9]$'
+          ui:widget: hidden
 
-    - title: Dataset & Model Configuration
+    - title: Dataset & Budget Configuration
       required:
         - dataset_id
-        - primary_model
       properties:
         dataset_id:
           title: Dataset
@@ -81,20 +74,6 @@ spec:
             - California Housing Prices (1.4 MB)
             - Online Retail II UCI (95 MB)
             - Spotify Tracks (20 MB)
-        primary_model:
-          title: Primary Model (Analyst + Writer)
-          type: string
-          description: >
-            Model for the Analyst and Writer roles. Planner is always claude-haiku-4-5-20251001.
-          enum:
-            - claude-sonnet-4-5-20250929
-            - claude-sonnet-4-6
-            - claude-haiku-4-5-20251001
-          enumNames:
-            - Claude Sonnet 4.5 (stable GA, recommended)
-            - Claude Sonnet 4.6 (latest)
-            - Claude Haiku 4.5 (fast, economical)
-          default: claude-sonnet-4-5-20250929
         budget_usd:
           title: Budget (USD)
           type: string
@@ -113,7 +92,6 @@ spec:
           agent_name: ${{ parameters.agent_name }}
           description: ${{ parameters.description }}
           dataset_id: ${{ parameters.dataset_id }}
-          primary_model: ${{ parameters.primary_model }}
           budget_usd: ${{ parameters.budget_usd }}
           project_id: ${{ parameters.project_id | default('') }}
           region: US-CENTRAL1

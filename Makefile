@@ -231,6 +231,10 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	DERIVED_IP=$$(curl -sf -H "Metadata-Flavor: Google" \
 		http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip); \
 	echo "  VM_IP=$$DERIVED_IP"; \
+	echo "→ Deriving PROJECT_ID from GCP metadata server (DD-105)"; \
+	PROJECT_ID_DERIVED=$$(curl -sf -H "Metadata-Flavor: Google" \
+		http://metadata.google.internal/computeMetadata/v1/project/project-id); \
+	echo "  PROJECT_ID=$$PROJECT_ID_DERIVED"; \
 	echo "→ Rewriting Backstage host references (DD-36)"; \
 	bash platform/scripts/rewrite-backstage-hosts.sh "$$DERIVED_IP"; \
 	echo "→ Materializing anthropic-api-key Secret in kagent-system (DD-83)"; \
@@ -240,6 +244,10 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	# DD-38: Keycloak scale-to-zero disabled — Opção I keeps Keycloak active for OIDC login via tunnel. \
 	# Re-enable when Opção L (custom Backstage image with guest provider) lands. See DESIGN §15 #22. \
 	# bash platform/values/keycloak-postrender.sh \
+	echo "→ DD-105: Baking VM IP and project ID into Backstage scaffolder template defaults"; \
+	sed -i "s/__BASE_DOMAIN__/$${DERIVED_IP}.sslip.io/g; s/__PROJECT_ID__/$${PROJECT_ID_DERIVED}/g" \
+		/tmp/whisperops/platform/idp/backstage-templates/entities/dataset-whisperer/template.yaml; \
+	echo "  ✓ Sentinel placeholders replaced in template.yaml"; \
 	echo "→ Syncing Backstage templates to Gitea (DD-40)"; \
 	{ \
 	    GITEA_PASS=$$(kubectl get secret -n gitea gitea-credential -o jsonpath="{.data.password}" | base64 -d); \
@@ -270,9 +278,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "→ Materializing whisperops-system Namespace + platform-config skeleton (DD-50)"; \
 	kubectl apply -f platform/whisperops-system/platform-config.yaml \
 		|| echo "  ⚠ platform-config.yaml apply failed; bring-up continues"; \
-	echo "→ Deriving registry_url from GCP metadata (terraform state not available in VM)"; \
-	PROJECT_ID_DERIVED=$$(curl -sf -H "Metadata-Flavor: Google" \
-		http://metadata.google.internal/computeMetadata/v1/project/project-id); \
+	echo "→ Deriving registry_url (PROJECT_ID_DERIVED already set at top of target — DD-105)"; \
 	REGISTRY_URL="us-central1-docker.pkg.dev/$${PROJECT_ID_DERIVED}/whisperops-images"; \
 	echo "→ Updating platform-config ConfigMap with live VM IP and registry_url (DD-50)"; \
 	kubectl create configmap platform-config -n whisperops-system \
@@ -574,8 +580,13 @@ langfuse-secret: ## Materialize langfuse-credentials Secret from SOPS-encrypted 
 		--from-literal=LANGFUSE_HOST="$$HOST" \
 		--from-literal=LANGFUSE_OTLP_ENDPOINT="$$OTLP" \
 		--from-literal=LANGFUSE_BASIC_AUTH="$$BASIC" \
-		--dry-run=client -o yaml | kubectl apply -f -
-	@echo "  ✓ langfuse-credentials Secret applied in observability namespace"
+		--dry-run=client -o yaml | kubectl apply -f -; \
+	 kubectl annotate secret langfuse-credentials -n observability \
+		reflector.v1.k8s.emberstack.com/reflection-allowed="true" \
+		reflector.v1.k8s.emberstack.com/reflection-auto-enabled="true" \
+		reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="whisperops-system" \
+		--overwrite
+	@echo "  ✓ langfuse-credentials Secret applied in observability namespace (Reflector annotations set for whisperops-system)"
 
 # ── Anthropic API key (DD-83) ──────────────────────────────────────────────────
 # SOPS-decrypts secrets/anthropic.enc.yaml → anthropic-api-key Secret in
