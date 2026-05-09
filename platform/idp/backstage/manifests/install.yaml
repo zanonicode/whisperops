@@ -253,7 +253,9 @@ spec:
               value: "0"
           envFrom:
             - secretRef:
-                name: backstage-env-vars
+                name: backstage-keycloak-env
+            - secretRef:
+                name: backstage-pg-password
             - secretRef:
                 name: gitea-credentials
             - secretRef:
@@ -308,17 +310,17 @@ spec:
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
-                  name: backstage-env-vars
+                  name: backstage-pg-password
                   key: POSTGRES_DB
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: backstage-env-vars
+                  name: backstage-pg-password
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: backstage-env-vars
+                  name: backstage-pg-password
                   key: POSTGRES_PASSWORD
           image: docker.io/library/postgres:15.3-alpine3.18
           name: postgres
@@ -359,7 +361,7 @@ spec:
 apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
-  name: backstage-oidc
+  name: backstage-oidc-keycloak
   namespace: backstage
 spec:
   secretStoreRef:
@@ -367,24 +369,14 @@ spec:
     kind: ClusterSecretStore
   refreshInterval: "30s"
   target:
-    name: backstage-env-vars
+    name: backstage-keycloak-env
     template:
       engineVersion: v2
       data:
-        # DD-38 follow-up (2026-05-07 deploy): KEYCLOAK_* keys removed by DD-37
-        # were not restored when DD-38 reverted to Opção I (Keycloak OIDC).
-        # Backstage app-config (line ~148/150 above) substitutes ${KEYCLOAK_*}
-        # at startup via envFrom; without these in the Secret, the auth-backend
-        # plugin fails: "Missing required config value at 'auth.providers...'".
         KEYCLOAK_NAME_METADATA: 'https://cnoe.localtest.me:8443/keycloak/realms/cnoe/.well-known/openid-configuration'
         KEYCLOAK_CLIENT_ID: backstage
         KEYCLOAK_CLIENT_SECRET: "{{.BACKSTAGE_CLIENT_SECRET}}"
         BACKSTAGE_FRONTEND_URL: https://cnoe.localtest.me:8443/backstage
-        POSTGRES_HOST: postgresql.backstage.svc.cluster.local
-        POSTGRES_PORT: '5432'
-        POSTGRES_DB: backstage
-        POSTGRES_USER: backstage
-        POSTGRES_PASSWORD: "{{.POSTGRES_PASSWORD}}"
         ARGOCD_AUTH_TOKEN: "argocd.token={{.ARGOCD_SESSION_TOKEN}}"
         ARGO_CD_URL: 'https://argocd-server.argocd.svc.cluster.local/api/v1/'
   data:
@@ -396,6 +388,25 @@ spec:
       remoteRef:
         key: keycloak-clients
         property: BACKSTAGE_CLIENT_SECRET
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: backstage-pg-password
+  namespace: backstage
+spec:
+  refreshInterval: "8760h"
+  target:
+    name: backstage-pg-password
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      data:
+        POSTGRES_HOST: postgresql.backstage.svc.cluster.local
+        POSTGRES_PORT: '5432'
+        POSTGRES_DB: backstage
+        POSTGRES_USER: backstage
+        POSTGRES_PASSWORD: "{{.POSTGRES_PASSWORD}}"
   dataFrom:
     - sourceRef:
         generatorRef:
