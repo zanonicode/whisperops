@@ -36,9 +36,6 @@ spec:
           type: string
           description: What does this agent analyse? Used in Backstage catalog.
           maxLength: 200
-
-    - title: Platform routing
-      properties:
         base_domain:
           title: Base domain
           type: string
