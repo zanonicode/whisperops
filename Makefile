@@ -9,8 +9,9 @@
         lint \
         copy-repo gcp-bootstrap-key build-images deploy-vm _vm-bootstrap \
         _push-whisperops-to-gitea \
+        _stop-argocd-apps \
         _drop-argo-workflows-crds \
-        _clean-orphan-iam-bindings _clean-orphan-firewalls
+        _clean-orphan-iam-bindings _clean-orphan-firewalls _clean-orphan-buckets
 
 TERRAFORM_DIR := terraform
 TF_ENV_DIR    := terraform/envs/demo
@@ -335,13 +336,45 @@ destroy: ## Tear down EVERYTHING: empty buckets → drain Crossplane → terrafo
 		[ "$$CONFIRM" = "$(PROJECT_ID)" ] || (echo "Aborted." && exit 1); \
 	fi
 	@if [ "$(SKIP_BUCKETS)" != "1" ]; then $(MAKE) empty-buckets PROJECT_ID=$(PROJECT_ID); else echo "↳ Skipping bucket empty (SKIP_BUCKETS=1)"; fi
-	@if [ "$(SKIP_CROSSPLANE)" != "1" ]; then $(MAKE) drain-crossplane; else echo "↳ Skipping Crossplane drain (SKIP_CROSSPLANE=1)"; fi
+	@if [ "$(SKIP_CROSSPLANE)" != "1" ]; then $(MAKE) _stop-argocd-apps; $(MAKE) drain-crossplane; else echo "↳ Skipping Crossplane drain (SKIP_CROSSPLANE=1)"; fi
 	$(MAKE) _drop-argo-workflows-crds
 	$(MAKE) _clean-orphan-firewalls PROJECT_ID=$(PROJECT_ID)
 	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=envs/demo/terraform.tfvars -auto-approve
 	$(MAKE) _clean-orphan-iam-bindings PROJECT_ID=$(PROJECT_ID)
 	$(MAKE) _clean-orphan-buckets PROJECT_ID=$(PROJECT_ID)
 	@echo "✓ Teardown complete."
+
+_stop-argocd-apps: ## Force-clear ArgoCD Application finalizers and delete all Applications (called before drain-crossplane to stop selfHeal recreating Crossplane MRs mid-drain)
+	@echo "→ Stopping ArgoCD reconciliation (delete all Applications) via VM SSH"
+	@# ArgoCD's selfHeal=true on agent-* and crossplane-* Applications recreates
+	@# any Crossplane Managed Resource we delete in drain-crossplane within
+	@# 1-3 seconds. Without this step the finalizer wait loop times out forever:
+	@# every poll finds the resources alive (recreated faster than the 5s poll).
+	@# Sever ArgoCD's reconciliation BEFORE drain by deleting all Applications.
+	@#
+	@# Force-clear the resources-finalizer.argoproj.io finalizer first so app
+	@# deletions don't block on cascade-delete of resources we're about to
+	@# delete via drain-crossplane (deadlock).
+	@if ! gcloud compute instances describe whisperops-vm --zone=$(ZONE) >/dev/null 2>&1; then \
+		echo "  ↳ VM does not exist — skipping (cluster already destroyed)"; \
+		exit 0; \
+	fi; \
+	gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=' \
+		set -e; \
+		APPS=$$(sudo kubectl get app -n argocd -o name 2>/dev/null || true); \
+		if [ -z "$$APPS" ]; then \
+			echo "  ↳ No ArgoCD Applications found"; \
+			exit 0; \
+		fi; \
+		COUNT=$$(echo "$$APPS" | wc -l | tr -d " "); \
+		echo "  ↳ Force-clearing finalizers on $$COUNT Applications"; \
+		echo "$$APPS" | while read app; do \
+			sudo kubectl patch -n argocd $$app --type=merge -p "{\"metadata\":{\"finalizers\":[]}}" >/dev/null 2>&1 || true; \
+		done; \
+		echo "  ↳ Deleting all Applications (no-wait — drain-crossplane handles MRs next)"; \
+		sudo kubectl delete app -n argocd --all --wait=false --timeout=30s 2>&1 | tail -3; \
+		echo "  ✓ ArgoCD reconciliation stopped" \
+	'
 
 _drop-argo-workflows-crds: ## Drop Argo Workflows CRDs from the VM-side kind cluster (idempotent)
 	@echo "→ Removing Argo Workflows CRDs (via VM SSH)"
