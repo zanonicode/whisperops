@@ -375,7 +375,7 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 #   SKIP_BUCKETS=1      skip Crossplane-bucket empty step
 #   FORCE=1             skip the interactive confirmation prompt
 
-destroy: ## Tear down EVERYTHING: drain Crossplane → empty buckets → terraform destroy
+destroy: ## Tear down EVERYTHING: empty buckets → drain Crossplane → terraform destroy
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set and not derivable from terraform.tfvars" && exit 1)
 	@if [ "$(FORCE)" != "1" ]; then \
 		echo "⚠  This will permanently delete:"; \
@@ -386,8 +386,8 @@ destroy: ## Tear down EVERYTHING: drain Crossplane → empty buckets → terrafo
 		read CONFIRM; \
 		[ "$$CONFIRM" = "$(PROJECT_ID)" ] || (echo "Aborted." && exit 1); \
 	fi
-	@if [ "$(SKIP_CROSSPLANE)" != "1" ]; then $(MAKE) drain-crossplane; else echo "↳ Skipping Crossplane drain (SKIP_CROSSPLANE=1)"; fi
 	@if [ "$(SKIP_BUCKETS)" != "1" ]; then $(MAKE) empty-buckets PROJECT_ID=$(PROJECT_ID); else echo "↳ Skipping bucket empty (SKIP_BUCKETS=1)"; fi
+	@if [ "$(SKIP_CROSSPLANE)" != "1" ]; then $(MAKE) drain-crossplane; else echo "↳ Skipping Crossplane drain (SKIP_CROSSPLANE=1)"; fi
 	$(MAKE) _drop-argo-workflows-crds
 	$(MAKE) _clean-orphan-firewalls PROJECT_ID=$(PROJECT_ID)
 	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=envs/demo/terraform.tfvars -auto-approve
