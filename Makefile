@@ -6,7 +6,7 @@
         external-ingresses \
         empty-buckets drain-crossplane \
         upload-datasets decrypt-secrets \
-        lint lint-python lint-ts lint-helm lint-terraform \
+        lint \
         copy-repo gcp-bootstrap-key build-images deploy-vm _vm-bootstrap \
         _push-whisperops-to-gitea \
         _drop-argo-workflows-crds \
@@ -16,8 +16,6 @@ TERRAFORM_DIR := terraform
 TF_ENV_DIR    := terraform/envs/demo
 SECRETS_DIR   := secrets
 DATASETS_DIR  := datasets
-SYSTEM_NS     := whisperops-system
-REGION        ?= us-central1
 
 # Resolve PROJECT_ID from tfvars when the operator did not pass it on the CLI.
 TFVARS_PROJECT_ID := $(shell grep -E '^project_id' $(TF_ENV_DIR)/terraform.tfvars 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/')
@@ -252,11 +250,12 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "→ Syncing Backstage templates to Gitea (DD-40)"; \
 	{ \
 	    GITEA_PASS=$$(kubectl get secret -n gitea gitea-credential -o jsonpath="{.data.password}" | base64 -d); \
+	    GITEA_PASS_ENC=$$(printf %s "$${GITEA_PASS}" | jq -sRr @uri); \
 	    kubectl port-forward -n gitea svc/my-gitea-http 13000:3000 >/dev/null 2>&1 & PF_PID=$$!; \
 	    trap "kill $$PF_PID 2>/dev/null" EXIT INT TERM; \
 	    sleep 2; \
 	    REPO_DIR=$$(mktemp -d); \
-	    git clone "http://giteaAdmin:$${GITEA_PASS}@127.0.0.1:13000/giteaAdmin/idpbuilder-localdev-backstage-templates-entities.git" "$$REPO_DIR" 2>&1 | tail -3; \
+	    git clone "http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13000/giteaAdmin/idpbuilder-localdev-backstage-templates-entities.git" "$$REPO_DIR" 2>&1 | tail -3; \
 	    rsync -a --delete --exclude='._*' --exclude='.DS_Store' platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
 	    cd "$$REPO_DIR"; \
 	    git -c user.email=ci@whisperops.io -c user.name=whisperops-ci add .; \
@@ -268,7 +267,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    fi; \
 	    cd - >/dev/null; rm -rf "$$REPO_DIR"; \
 	    kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
-	} || echo "  ⚠ DD-40 Gitea sync failed; bring-up continues"; \
+	}; \
 	echo "→ Pushing whisperops repo to Gitea + applying ArgoCD root-app (DD-63)"; \
 	$(MAKE) _push-whisperops-to-gitea \
 		|| echo "  ⚠ DD-63 Gitea push failed; bring-up continues — ArgoCD will not sync platform apps until resolved"; \
@@ -654,21 +653,13 @@ decrypt-secrets: ## Decrypt all secrets/*.enc.yaml → secrets/*.dec.yaml (gitig
 
 # ── Lint ───────────────────────────────────────────────────────────────────────
 
-lint: lint-python lint-ts lint-helm lint-terraform ## Run all linters
-
-lint-python: ## Lint Python (ruff + mypy)
+lint: ## Run all linters (Python ruff/mypy + TS tsc + Helm lint + Terraform validate)
 	ruff check src/
 	mypy src/ --ignore-missing-imports
-
-lint-ts: ## Type-check TypeScript (tsc --noEmit)
 	cd src/chat-frontend && tsc --noEmit
-
-lint-helm: ## Lint Helm charts
 	@for chart in platform/helm/*/; do \
 		helm lint "$$chart" && echo "✓ $$chart"; \
 	done
-
-lint-terraform: ## Validate Terraform
 	terraform -chdir=$(TERRAFORM_DIR) validate
 
 # ── Smoke tests ────────────────────────────────────────────────────────────────
