@@ -115,10 +115,17 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ SSH not ready after 5 min"; exit 1; fi; \
 		printf "."; sleep 5; \
 	done
-	@# macOS tar emits AppleDouble `._*` metadata files alongside YAMLs in helm
-	@# chart templates dirs; kubectl apply -f then chokes with "control characters
-	@# are not allowed". Exclude them so the archive stays clean for Linux consumers.
-	@tar \
+	@# macOS BSD tar INJECTS AppleDouble `._*` entries on-the-fly into the
+	@# archive stream from extended attributes — these never exist as files on
+	@# disk so `--exclude='._*'` cannot filter them. The injected entries land
+	@# on the Linux VM as real files, eventually causing things like
+	@# `kubectl apply -f` to choke with "control characters are not allowed"
+	@# and polluting `git add -A` snapshots pushed to Gitea (~975 ._* files
+	@# observed on a single deploy). The fix is the COPYFILE_DISABLE=1 env
+	@# var, which tells macOS bsdtar to skip xattr serialization entirely.
+	@# `--exclude='._*'` is kept as belt-and-suspenders for the case where
+	@# AppleDouble files do exist as real files on disk.
+	@COPYFILE_DISABLE=1 tar \
 		--exclude='.terraform' \
 		--exclude='.git' \
 		--exclude='node_modules' \
@@ -257,7 +264,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    sleep 2; \
 	    REPO_DIR=$$(mktemp -d); \
 	    git clone "http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13000/giteaAdmin/idpbuilder-localdev-backstage-templates-entities.git" "$$REPO_DIR" 2>&1 | tail -3; \
-	    rsync -a --delete --exclude='._*' --exclude='.DS_Store' platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
+	    rsync -a --delete --exclude='.git' --exclude='._*' --exclude='.DS_Store' platform/idp/backstage-templates/entities/ "$$REPO_DIR/"; \
 	    cd "$$REPO_DIR"; \
 	    git -c user.email=ci@whisperops.io -c user.name=whisperops-ci add .; \
 	    if [ -d .git ] && git diff --cached --quiet; then \
@@ -270,8 +277,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
 	}; \
 	echo "→ Pushing whisperops repo to Gitea + applying ArgoCD root-app"; \
-	$(MAKE) _push-whisperops-to-gitea \
-		|| echo "  ⚠ Gitea push failed; bring-up continues — ArgoCD will not sync platform apps until resolved"; \
+	$(MAKE) _push-whisperops-to-gitea; \
 	echo "→ Materializing langfuse-credentials Secret"; \
 	$(MAKE) langfuse-secret; \
 	echo "→ Regenerating external Ingresses"; \
@@ -296,67 +302,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "✓ VM bring-up complete"'
 
 _push-whisperops-to-gitea: ## Create whisperops Gitea org+repo, push repo, apply ArgoCD root-app (run inside VM)
-	@bash -c 'set -euo pipefail; \
-	cd /tmp/whisperops; \
-	export KUBECONFIG=/root/.kube/config; \
-	echo "  ↳ Resolving Gitea admin password"; \
-	GITEA_PASS=$$(kubectl get secret -n gitea gitea-credential -o jsonpath="{.data.password}" | base64 -d); \
-	echo "  ↳ Port-forwarding Gitea on 13001:3000"; \
-	kubectl port-forward -n gitea svc/my-gitea-http 13001:3000 >/dev/null 2>&1 & PF_PID=$$!; \
-	trap "kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM" EXIT INT TERM; \
-	sleep 3; \
-	GITEA_URL="http://127.0.0.1:13001"; \
-	GITEA_AUTH="giteaAdmin:$${GITEA_PASS}"; \
-	echo "  ↳ Creating Gitea org '\''whisperops'\'' (idempotent)"; \
-	HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" \
-		-X POST "$${GITEA_URL}/api/v1/orgs" \
-		-H "Content-Type: application/json" \
-		-u "$${GITEA_AUTH}" \
-		-d '\''{"username":"whisperops","visibility":"public"}'\''); \
-	if [ "$$HTTP_CODE" = "201" ]; then \
-		echo "  ✓ Org whisperops created"; \
-	elif [ "$$HTTP_CODE" = "422" ]; then \
-		echo "  ↳ Org whisperops already exists — skipping"; \
-	else \
-		echo "  ✗ Org creation returned HTTP $$HTTP_CODE — aborting"; exit 1; \
-	fi; \
-	echo "  ↳ Creating Gitea repo '\''whisperops/whisperops'\'' (idempotent)"; \
-	HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" \
-		-X POST "$${GITEA_URL}/api/v1/orgs/whisperops/repos" \
-		-H "Content-Type: application/json" \
-		-u "$${GITEA_AUTH}" \
-		-d '\''{"name":"whisperops","private":false,"auto_init":true,"default_branch":"main"}'\''); \
-	if [ "$$HTTP_CODE" = "201" ]; then \
-		echo "  ✓ Repo whisperops/whisperops created"; \
-	elif [ "$$HTTP_CODE" = "409" ]; then \
-		echo "  ↳ Repo whisperops/whisperops already exists — skipping creation"; \
-	else \
-		echo "  ✗ Repo creation returned HTTP $$HTTP_CODE — aborting"; exit 1; \
-	fi; \
-	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
-	# URL-encode Gitea password via jq @uri: the admin password contains \
-	# URL-reserved characters; embedding it raw breaks git's URL parser. \
-	GITEA_PASS_ENC=$$(printf %s "$${GITEA_PASS}" | jq -sRr @uri); \
-	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13001/whisperops/whisperops.git"; \
-	# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh \
-	# snapshot repo here so we can push to Gitea. ArgoCD only needs HEAD content, \
-	# not history. This is destructive on /tmp/whisperops/.git but that dir is \
-	# transient (rebuilt every copy-repo run). \
-	rm -rf /tmp/whisperops/.git; \
-	git -C /tmp/whisperops init -q -b main; \
-	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
-		add -A; \
-	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
-		commit -q -m "whisperops snapshot for ArgoCD reconciliation"; \
-	git -C /tmp/whisperops remote add gitea-push "$${PUSH_REMOTE}"; \
-	git -C /tmp/whisperops push gitea-push main:main --force 2>&1 | tail -5; \
-	git -C /tmp/whisperops remote remove gitea-push 2>/dev/null || true; \
-	echo "  ✓ Repo snapshot pushed to Gitea"; \
-	kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
-	echo "  ↳ Applying ArgoCD root-app (app-of-apps)"; \
-	kubectl apply -f /tmp/whisperops/platform/argocd/bootstrap/root-app.yaml; \
-	echo "  ✓ root-app applied — ArgoCD will register 8 child apps and sync from whisperops/whisperops.git"; \
-	echo "  Note: initial sync may take 2-5 min; check with: kubectl get app -n argocd"'
+	@bash /tmp/whisperops/scripts/push-whisperops-to-gitea.sh
 
 # ── Teardown ───────────────────────────────────────────────────────────────────
 # Order matters: Crossplane Managed Resources must be drained BEFORE Terraform
