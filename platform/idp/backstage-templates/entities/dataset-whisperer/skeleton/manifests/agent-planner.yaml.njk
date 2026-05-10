@@ -30,3 +30,15 @@ spec:
     - type: Agent
       agent:
         ref: agent-${{ values.agent_name }}/writer
+  a2aConfig:
+    skills:
+      - id: dataset-question-orchestration
+        name: Dataset Question Orchestration
+        description: Route user questions about ${{ values.dataset_id }} through the analyst (compute) and writer (prose) agents to produce a final markdown answer.
+        tags:
+          - orchestration
+          - ${{ values.dataset_id }}
+        examples:
+          - "What is the median of column X?"
+          - "How many records are there?"
+          - "Plot the distribution of Y."

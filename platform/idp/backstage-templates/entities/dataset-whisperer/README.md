@@ -26,7 +26,6 @@ agent-{name}/
     service-account-key.yaml
     iam-bindings.yaml
     modelconfig-primary.yaml
-    modelconfig-planner.yaml
     agent-planner.yaml
     agent-analyst.yaml
     agent-writer.yaml

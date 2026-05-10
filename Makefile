@@ -157,13 +157,14 @@ gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply 
 	@# docker (DD-98 retries can take up to 15min) → install kubectl → setup sudoers.
 	@# Budget must accommodate worst-case apt retries + kubectl install + sudoers.
 	@# 20min = 240 iterations × 5s. Aligns with DD-95's 1500s cloud-init budget.
+	@# DD-113: probes cluster API readiness, not just kubectl client
 	@for i in $$(seq 1 240); do \
 		if gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
-		     --command='sudo -n /usr/local/bin/kubectl version --client' \
+		     --command='sudo -n /usr/local/bin/kubectl get nodes' \
 		     >/dev/null 2>&1; then \
-			echo ""; echo "  ✓ VM ready (kubectl + sudo NOPASSWD)"; break; \
+			echo ""; echo "  ✓ VM ready (kubectl + sudo NOPASSWD + cluster API)"; break; \
 		fi; \
-		if [ "$$i" = "240" ]; then echo ""; echo "  ✗ Cloud-init not ready after 20 min — inspect /var/log/syslog on VM"; exit 1; fi; \
+		if [ "$$i" = "240" ]; then echo ""; echo "  ✗ Cloud-init not ready after 20 min — inspect /var/log/syslog AND /var/log/whisperops-bootstrap.log on VM"; exit 1; fi; \
 		printf "."; sleep 5; \
 	done
 	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
