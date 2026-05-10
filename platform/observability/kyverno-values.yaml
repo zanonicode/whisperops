@@ -1,8 +1,8 @@
 # Kyverno chart 3.2.6 ships the cleanup CronJobs with image
-# `bitnami/kubectl:1.28.5` which Bitnami removed from public registry,
+# `bitnami/kubectl:1.28.5` which Bitnami removed from the public registry,
 # causing ImagePullBackOff every 10min. Pin to a SIG-managed image with a
 # more durable lifecycle. registry.k8s.io/kubectl is the official SIG
-# release; v1.32.0 is the latest stable 1.32.x at DD-65 build time.
+# release.
 # Exact values keys verified via `helm show values kyverno/kyverno --version 3.2.6`:
 # cleanupJobs.<name>.image.{registry,repository,tag} — registry defaults to ~
 # (null/unset), so the full image was "bitnami/kubectl:1.28.5". Setting

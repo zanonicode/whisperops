@@ -19,10 +19,10 @@ spec:
             secretName: gcp-bootstrap-sa-key
       containers:
         - name: token-rotate
-          # DD-99: cloud-sdk:slim does NOT include kubectl — only :latest does.
-          # The seed Job needs both gcloud (mint AR token) and kubectl (patch
-          # the source Secret). Larger image (~1GB) but only this Job + the
-          # 30min rotator pull it.
+          # cloud-sdk:slim does NOT include kubectl — only :latest does. This
+          # Job needs both gcloud (to mint an AR access token) and kubectl
+          # (to patch the source Secret). Larger image (~1GB) but only this
+          # Job + the 30min rotator CronJob pull it.
           image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
           command:
             - /bin/bash

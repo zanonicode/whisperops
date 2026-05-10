@@ -2,13 +2,12 @@
 # Enables Tempo OTLP ingest, sets replication factor to 1 for single-node
 # kind, and removes anti-affinity / topology-spread that prevent scheduling
 # on a single-node cluster.
-# DD-30 (DESIGN v1.7): lgtm-distributed Tempo disabled. The distributor
-# enforces 'min 2 live ingester replicas' even with replication_factor=1,
-# which can't be satisfied on a single-node kind cluster. The standalone
-# `tempo-mono` (grafana/tempo single-binary chart) handles all OTLP
-# traffic; this sub-chart sits idle and burns ~500 MiB. Disabling reclaims
-# the resources. Re-enable for multi-node clusters where replicas can
-# actually schedule.
+# lgtm-distributed Tempo is disabled: the distributor enforces 'min 2 live
+# ingester replicas' even with replication_factor=1, which can't be
+# satisfied on a single-node kind cluster. The standalone `tempo-mono`
+# (grafana/tempo single-binary chart) handles all OTLP traffic; this
+# sub-chart sits idle and burns ~500 MiB. Re-enable for multi-node clusters
+# where replicas can actually schedule.
 tempo:
   enabled: false
 
@@ -17,9 +16,9 @@ tempo:
 # observability-extras chart).
 grafana:
   # Install the Infinity datasource plugin so Grafana can query the Langfuse
-  # public REST API (/api/public/traces, /api/public/scores, etc.) — DD-24
-  # follow-up: traces dual-ship to Langfuse via OTel; Langfuse-specific
-  # panels (cost rollups, scores) read via Infinity.
+  # public REST API (/api/public/traces, /api/public/scores, etc.). Traces
+  # dual-ship to Langfuse via OTel; Langfuse-specific panels (cost rollups,
+  # scores) read via Infinity.
   plugins:
     - yesoreyeram-infinity-datasource
   # Pull Langfuse credentials into Grafana's env so the datasource

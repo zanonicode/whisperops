@@ -2,103 +2,124 @@
 
 ## Overview
 
-WhisperOps is an Internal Developer Platform that provisions governed, observable Data Analyst agents over curated datasets. Operators use a 4-field Backstage form to spin up a complete agent system (Planner + Analyst + Writer) in under 90 seconds of ArgoCD sync time.
+WhisperOps is an Internal Developer Platform that provisions governed, observable Data Analyst agents over curated datasets. Operators use a Backstage scaffolder form to spin up a complete agent system (Planner orchestrating Analyst + Writer) in under 90 seconds of ArgoCD sync time. Each agent is fully isolated: its own Kubernetes namespace, GCS bucket, GCP service account, sandbox MCP pod, and chat-frontend pod.
 
 ## Layer Diagram
 
 ```
 EXTERNAL
-  Anthropic API (Haiku/Sonnet)
-  OpenAI API (text-embedding-3-small)
-  Supabase Cloud (Postgres + pgvector)
-  Langfuse Cloud (LLM traces + cost)
+  Anthropic API (Sonnet 4.5)
+  OpenAI API (text-embedding-3-small — used by kagent UI sidecar)
+  Langfuse Cloud US (LLM traces + cost rollups)
   Let's Encrypt (TLS via cert-manager)
   Operator (gcloud, age key, kubectl)
 
 GCP PROJECT (Terraform-managed)
-  VPC + subnet + firewall + static IP + sslip.io DNS
-  GCE e2-standard-8 VM (32 GB / 8 vCPU)
+  VPC + subnet + firewall + per-deploy external IP + sslip.io DNS
+  GCE e2-standard-8 VM (32 GB RAM / 8 vCPU, 100 GB SSD)
     kind cluster (single-node)
-      IDP Layer (idpBuilder bootstrap)
+      IDP Layer (idpbuilder/CNOE, vendored)
         Backstage  ArgoCD  Gitea  Keycloak  ESO  cert-manager  NGINX-Ingress
-      Platform Layer (Helmfile + ArgoCD app-of-apps)
-        kagent  LGTM (Grafana/Loki/Tempo/Mimir)
-        OTel-Collector  Kyverno  provider-gcp  Sandbox pool
+      Application Platform Layer (helmfile + ArgoCD app-of-apps)
+        kagent (CRDs separate chart)
+        Crossplane (GCP family providers + ProviderConfig — split sync waves)
+        Kyverno  Reflector  ar-pull-secret rotation  budget-controller
+        LGTM-distributed (Loki + Mimir + Grafana)
+        OTel Collector  tempo-mono (single-binary tracing backend)
       Per-Agent Layer (Backstage → Gitea → ArgoCD)
-        namespace: agent-{name}-{suffix}
-          Planner (Haiku)  Analyst (Haiku/Sonnet)  Writer (Haiku/Sonnet)
-          Chat Frontend  Crossplane resources
+        namespace: agent-{name}
+          Planner / Analyst / Writer (kagent Agent CRs, Sonnet 4.5)
+          Sandbox MCP (FastAPI + FastMCP)  Chat Frontend (Next.js)
+          Crossplane: Bucket + ServiceAccount + ServiceAccountKey + IAM bindings
+          Kyverno namespaced policies  per-agent Ingress
 ```
 
 ## Component Responsibilities
 
-### Backstage Template
-Entry point for operators. A 4-field form renders 14 Nunjucks skeleton files into a Gitea PR. Custom scaffolder action `whisperops:generate-suffix` ensures namespace uniqueness.
+### Backstage scaffolder
+Entry point for operators. The `dataset-whisperer` template renders Nunjucks skeleton files into a Gitea PR that ArgoCD then syncs. Form fields visible to the operator: `agent_name`, `description`, `dataset_id` (enum), `budget_usd`. Hidden fields `base_domain` and `project_id` are sed-baked into the template by `_vm-bootstrap` from the live VM IP and project ID at deploy time, so operators never type them.
 
 ### ArgoCD (app-of-apps)
-Watches `platform/argocd/applications/` and `agents/` directories in Gitea. Sync waves ensure ordered rollout: Namespace → Crossplane resources → kagent Agents → Chat Frontend.
+The `root-app` Application is applied at the end of `_vm-bootstrap`. It watches `platform/argocd/applications/` in the in-cluster Gitea repo and instantiates child Applications for `crossplane-providers`, `crossplane-provider-config`, `budget-controller`, `kyverno-policies`, `observability`, `agent-prompts`, `platform-bootstrap-job`, `ar-pull-secret`, and `reflector`. Per-agent Applications are added when operators scaffold via Backstage.
 
 ### kagent
-Kubernetes-native LLM agent controller. Manages Agent CRDs referencing prompt ConfigMaps. Supports A2A (agent-to-agent) communication.
+Kubernetes-native LLM agent runtime. Manages `Agent`, `ModelConfig`, and `ToolServer` CRDs. The CRDs ship as a separate Helm chart (`kagent-crds`) installed first via helmfile `needs:` ordering so the main `kagent` chart can register CRs without a CRD-establish race.
 
-### Sandbox
-Shared FastAPI service (`sandbox` namespace). Executes Python code submitted by the Analyst agent. Enforces: 60s CPU timeout, 3 GB memory limit (via `setrlimit`), per-execution credential injection, artifact upload to per-agent GCS bucket.
+### Sandbox MCP (per agent)
+One FastAPI Deployment per `agent-{name}` namespace running an MCP server over streamable-HTTP. Exposes a single tool (`execute_python_<agent>` — namespaced per-agent because kagent's tool registry has a global UNIQUE constraint on `tool.name`). Enforces: 60s subprocess timeout, 4 Gi memory limit (`setrlimit RLIMIT_AS`), read-only root filesystem, NetworkPolicy egress restricted to GCS + DNS + the in-cluster OTel collector. Mounts the agent's GCP SA key from the namespace's `gcp-sa-key` Secret — no per-call credential passing.
 
-### Budget Controller
-60-second poll loop. Reads Langfuse cost API per agent, compares against `whisperops.io/budget-usd` annotation. At 80%: emits K8s Warning Event + Prometheus counter. At 100%: scales all Deployments in agent namespace to 0 replicas.
+### Chat Frontend (per agent)
+Next.js app exposing a chat UI at `agent-{name}.{vm-ip}.sslip.io:8443`. The `/api/chat` route opens an SSE stream from the browser, creates a kagent session via `POST /api/sessions/{id}/invoke/stream`, translates kagent's event stream into the SSE shape the browser consumes, and forwards Writer tokens. Marked `force-dynamic` so Next.js does not freeze `process.env` at build time.
 
-### Platform Bootstrap Job
-One-shot Kubernetes Job (ArgoCD sync-wave 5). Downloads CSVs from shared GCS bucket, profiles them with pandas, generates descriptions via GPT-4o-mini, embeds with `text-embedding-3-small`, upserts to Supabase pgvector. Idempotent via SHA-256 source hash.
+### Crossplane
+GCP family providers (`provider-gcp-storage`, `provider-gcp-iam`, `provider-gcp-cloudplatform`, `provider-family-gcp`) reconcile per-agent resources from CRDs the Backstage template emits: `Bucket/agent-{name}`, `ServiceAccount/agent-{name}`, `ServiceAccountKey` (which writes its own connection Secret to the agent namespace), and two `ProjectIAMMember` bindings (admin own bucket, read shared datasets bucket). The `crossplane-providers` and `crossplane-provider-config` ArgoCD apps are split on separate sync waves to avoid a CRD-establish race.
 
-### Observability Stack
-LGTM (Grafana + Loki + Tempo + Mimir) + OTel Collector with dual exporter:
-- `otlp/tempo` → in-cluster Tempo
-- `otlphttp/langfuse` → Langfuse Cloud
+### Reflector + ar-pull-secret rotation
+A source `ar-pull-secret-source` Secret in `crossplane-system` holds an Artifact Registry access token. A 30-min CronJob refreshes the token via `gcloud auth print-access-token`. Reflector replicates the Secret into every `agent-*` namespace so per-agent pods can pull `us-central1-docker.pkg.dev/.../whisperops-images/...` without per-namespace ESO plumbing.
 
-## Data Flow: Provisioning (≤ 90s)
+### budget-controller
+Polls Langfuse REST API every 60 s for per-agent spend; compares against the `whisperops.io/budget-usd` annotation on each agent's namespace. At 80%: emits a K8s Warning Event + Prometheus counter. At 100%: scales all Deployments in the agent namespace to 0 replicas.
 
-1. Operator fills Backstage form → scaffolder task created
-2. `whisperops:generate-suffix` → random 4-char suffix
-3. 14 Nunjucks files rendered → committed to Gitea `agents/{name}-{xyz}/`
-4. ArgoCD detects new path → syncs in wave order
-5. Wave 0: Namespace + ESO ExternalSecret + ArgoCD Application
-6. Wave 1: Crossplane Bucket + ServiceAccount + ServiceAccountKey + IAM bindings
-7. Wave 2: kagent Agents (×3) + ToolServer + Kyverno Policy
-8. Wave 3: Chat Frontend Deployment + Service + Ingress
-9. cert-manager issues TLS → `agent-{name}-{xyz}.{base_domain}` is live
+> The kill-switch path is currently fragile (Langfuse REST + OTel pipeline drift exposed during a prior cycle). See `PENDING_whisperops.md §A2`.
 
-## Data Flow: Query Runtime (≤ 15s p50)
+### Observability stack
+LGTM-distributed (Loki + Mimir + Grafana) plus a standalone single-binary `tempo-mono` for tracing (the lgtm-distributed Tempo sub-chart is disabled because its distributor enforces a 2-ingester minimum that doesn't fit a single-node kind cluster). The OTel Collector dual-exports traces to both Tempo (in-cluster) and Langfuse Cloud (`otlphttp/langfuse` exporter). Grafana also queries Langfuse REST via the Infinity datasource for the cost-rollup dashboard.
 
-1. User types question → HTTP POST `/api/chat`
-2. Next.js route handler opens SSE stream → forwards to Planner agent
-3. Planner (Haiku) reads dataset profile from Supabase pgvector → returns JSON plan
-4. Analyst (Haiku/Sonnet) generates Python code → calls `sandbox.execute_python`
-5. Sandbox: injects per-exec credentials, runs subprocess with limits, uploads chart
-6. Analyst returns signed chart URL + summary
-7. Writer (Haiku/Sonnet) formats prose + embeds chart → streams SSE tokens
-8. Browser renders tokens incrementally; chart renders inline
+> Tempo currently uses in-memory storage; durable WAL/blocks are tracked in `PENDING_whisperops.md §B3`.
+
+### Platform-bootstrap Job (dormant)
+A one-shot Kubernetes Job intended to populate dataset profile JSON in Supabase pgvector. **Currently dormant** — Supabase is provisioned via SOPS-encrypted credentials but no runtime component reads from it; the Planner uses a literal `dataset_id` baked into its system prompt at scaffold time, not a runtime profile lookup. See `PENDING_whisperops.md §C1` for the wire-or-delete decision.
+
+## Data Flow: Provisioning (≤ 90 s after PR merge)
+
+1. Operator submits the Backstage form (4 visible fields) → scaffolder task created.
+2. Nunjucks skeleton files rendered with sed-baked `base_domain` + `project_id` → committed to Gitea repo `whisperops/agent-{name}/`.
+3. The repo's ArgoCD Application detects the new path → syncs from `manifests/` subfolder.
+4. Sync wave order: Namespace → Crossplane resources (Bucket + SA + Key + IAMMember) → kagent ModelConfig + Agent CRs (planner/analyst/writer with `a2aConfig.skills`) → Sandbox + Chat Frontend Deployments + Service + Ingress.
+5. Reflector replicates `ar-pull-secret`, `langfuse-credentials`, and `anthropic-api-key` into the new namespace within seconds.
+6. cert-manager issues TLS for `agent-{name}.{vm-ip}.sslip.io` → chat UI is live.
+
+## Data Flow: Query Runtime (p50 ≈ 15 s, p95 ≈ 30 s)
+
+1. User types question → browser opens SSE to chat-frontend `/api/chat`.
+2. Route handler creates a kagent session via `POST /api/sessions`, then invokes the planner via `POST /api/sessions/{id}/invoke/stream`.
+3. Planner (Sonnet 4.5) orchestrates: calls Analyst as an A2A tool, passes the result to Writer.
+4. Analyst calls the Sandbox MCP `execute_python_<agent>` tool. Sandbox subprocess loads the dataset CSV from `gs://whisperops-datasets/`, runs the user code with `pd`/`np`/`plt`/`df` pre-loaded, uploads any chart PNGs to `gs://agent-{name}/charts/`, returns `{stdout, signed_chart_url, error?}`.
+5. Writer composes markdown prose with chart embeds and code blocks, streams tokens back via SSE.
+6. Browser renders tokens incrementally; charts render inline.
+7. The OTel Collector dual-exports the trace (3 A2A spans — Planner, Analyst, Writer) to both Tempo (queryable via Grafana TraceQL) and Langfuse Cloud (cost rollup view).
 
 ## Security Controls
 
 | Control | Implementation |
 |---------|---------------|
-| Network isolation | Kyverno-generated NetworkPolicy per agent namespace |
-| Sandbox egress | NetworkPolicy: GCS + DNS only |
-| No privilege escalation | Kyverno ClusterPolicy: `privileged: false`, `allowPrivilegeEscalation: false` |
-| Secret lifecycle | SOPS → ESO → K8s Secret; SA keys written to `/tmp` and deleted in `finally` |
-| Image registry allowlist | Kyverno: Gitea + approved upstreams only |
-| Budget enforcement | budget-controller scales to 0 at 100% spend |
-| Resource limits | Kyverno: CPU+memory limits required in agent namespaces |
+| Network isolation | Per-namespace NetworkPolicy generated by the Backstage skeleton |
+| Sandbox egress | NetworkPolicy: GCS + DNS + in-cluster OTel collector only |
+| No privilege escalation | Pod spec: `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]`, `automountServiceAccountToken: false` |
+| Secret lifecycle | SOPS+age in git → ESO (where used) + Reflector cross-namespace replication. Bootstrap SA key generated fresh per deploy |
+| Image registry allowlist | The namespaced `agent-egress-policy` is currently enforced; cluster-wide Kyverno policies are tracked in `PENDING_whisperops.md §B5` |
+| Budget enforcement | budget-controller scales agent Deployments to 0 at 100% spend (degraded — see `PENDING_whisperops.md §A2`) |
+| Resource limits | Agent Pod templates declare CPU + memory limits; Kyverno namespaced policy validates (cluster-wide enforcement pending) |
 
 ## Storage Layout
 
 ```
-gs://{project}-datasets/          # Shared; read by Sandbox via signed URL
-  california-housing-prices.csv
-  online_retail_II.csv
+gs://{project}-tfstate/                    # Terraform remote state
+gs://{project}-datasets/                   # Shared, read-only for agents
+  california-housing.csv
+  online-retail-ii.csv
   spotify-tracks.csv
-
-gs://agent-{name}-{suffix}/       # Per-agent; write artifacts
-  artifacts/chart.png
-  artifacts/chart.html
+gs://agent-{name}/                         # Per-agent, R/W via mounted SA key
+  charts/{uuid}.png                        # Chart artifacts uploaded by sandbox
 ```
+
+The `whisperops-images` Artifact Registry repo (provisioned by Terraform) holds all four whisperops-owned images: `budget-controller`, `chat-frontend`, `sandbox`, `platform-bootstrap`.
+
+## See also
+
+- [`OPERATIONS.md`](OPERATIONS.md) — operator handbook (deploy chain, agent lifecycle, observability navigation)
+- [`SECRETS.md`](SECRETS.md) — SOPS + age workflow
+- [`SECURITY.md`](SECURITY.md) — threat model, residual risks, IAM scoping
+- [`runbooks/incident-response.md`](runbooks/incident-response.md) — incident procedures
+- `.claude/sdd/features/DESIGN_whisperops.md` — full architecture spec (internal)
+- `.claude/sdd/features/PENDING_whisperops.md` — internal backlog

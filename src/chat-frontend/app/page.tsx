@@ -1,7 +1,7 @@
 import ChatPageClient from './components/ChatPageClient';
 
 // Without this, Next.js prerenders / as Static (○) and bakes process.env into
-// the HTML at build time — defeating the DD-44 runtime-config goal.
+// the HTML at build time — defeating runtime config injection.
 export const dynamic = 'force-dynamic';
 
 export default function ChatPage() {

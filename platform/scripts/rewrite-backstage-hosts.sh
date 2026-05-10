@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
-# DD-36 (DESIGN v1.10): Rewrite all cnoe.localtest.me host references in
+# Rewrite all cnoe.localtest.me host references in
 # platform/idp/backstage/manifests/install.yaml to sslip.io URLs derived from
-# the VM's external IP. Ordered multi-pass: path-suffixed patterns matched
-# before bare domain to prevent double-substitution. Called by _vm-bootstrap
-# before helmfile apply. Ref: .claude/sdd/features/DESIGN_whisperops.md §3 DD-36
-# DD-38 interaction: this script remains useful even though the operator
-# now accesses Backstage via SSH tunnel + cnoe.localtest.me path-routing.
-# It still rewrites Backstage's external sslip.io URLs for cases where
-# operators use the sslip.io endpoints to view Backstage UI without
-# triggering OIDC login (e.g., catalog browsing, quick checks). The
-# Keycloak OIDC popup will fail on those sslip.io URLs (redirect_uri
-# mismatch); use the tunnel + cnoe.localtest.me path for full OIDC flow.
-# See DESIGN §3 DD-38 for the full rationale.
-# DD-39: usage: rewrite-backstage-hosts.sh <VM_IP> [TARGET_FILE]
+# the VM's external IP. Ordered multi-pass: path-suffixed patterns are matched
+# before the bare domain to prevent double-substitution. Called by
+# _vm-bootstrap before helmfile apply.
+#
+# This script remains useful even though the operator now accesses Backstage
+# primarily via an SSH tunnel + cnoe.localtest.me path-routing. It still
+# rewrites Backstage's external sslip.io URLs for cases where operators view
+# the UI on the sslip.io endpoints without triggering OIDC login (e.g.,
+# catalog browsing, quick checks). The Keycloak OIDC popup will fail on those
+# sslip.io URLs (redirect_uri mismatch); use the tunnel + cnoe.localtest.me
+# path for the full OIDC flow.
+#
+# Usage: rewrite-backstage-hosts.sh <VM_IP> [TARGET_FILE]
 # TARGET_FILE defaults to platform/idp/backstage/manifests/install.yaml
 # relative to the repo root. Pass an explicit path for testing.
 set -euo pipefail

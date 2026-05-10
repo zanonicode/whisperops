@@ -84,13 +84,12 @@ config:
         - action: upsert
           key: deployment.environment
           value: dev
-    # DD-42 Decision E (v1.18 corrected): truncate every span attribute
-    # value to 2048 bytes. Sandbox spans carry user Python source as an
-    # attribute, which trips the OTel collector "too many attributes"
-    # warning and bloats Tempo/Langfuse storage. The original v1.17
-    # prescription (`config.attribute_limits.max_attribute_value_size`)
-    # is not a valid OTel collector root key — corrected here to a
-    # `transform` processor with OTTL `truncate_all`.
+    # Truncate every span attribute value to 2048 bytes. Sandbox spans carry
+    # user Python source as an attribute, which trips the OTel collector
+    # "too many attributes" warning and bloats Tempo/Langfuse storage.
+    # Implemented via a `transform` processor with OTTL `truncate_all` because
+    # `config.attribute_limits.max_attribute_value_size` is not a valid OTel
+    # collector root key.
     transform/truncate_attrs:
       trace_statements:
         - context: span

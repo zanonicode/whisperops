@@ -2,7 +2,7 @@
 
 This guide covers how to **bring your own credentials** to a fresh whisperops deploy. The repo ships with a SOPS-encrypted set under `secrets/` that only decrypts with the maintainer's `age.key`. To run the platform on your own GCP project + SaaS accounts, follow this guide end-to-end.
 
-> Cross-references: [DESIGN §13 Security](../.claude/sdd/features/DESIGN_whisperops.md), [Makefile targets](../Makefile), [docs/OPERATIONS.md §1 — Stage 5 secret materialization](OPERATIONS.md).
+> Cross-references: [`DESIGN_whisperops.md`](../.claude/sdd/features/DESIGN_whisperops.md), [`Makefile`](../Makefile), [`OPERATIONS.md`](OPERATIONS.md).
 
 ---
 
@@ -94,23 +94,24 @@ Then run `sops updatekeys secrets/*.enc.yaml` to add the new recipients to exist
 
 ---
 
-## 4. The 5 secrets — what they hold and how to obtain each
+## 4. The 4 secrets — what they hold and how to obtain each
 
 Run `ls secrets/` to see the canonical set:
 
 ```
 anthropic.enc.yaml             # Anthropic API key (Claude Sonnet 4.5)
-crossplane-gcp-creds.enc.yaml  # GCP SA JSON for Crossplane provider
 langfuse.enc.yaml              # Langfuse Cloud public + secret keys
 openai.enc.yaml                # OpenAI API key (kagent's querydoc sidecar)
-supabase.enc.yaml              # Supabase URL + service-role key (dataset profiles)
+supabase.enc.yaml              # Supabase URL + keys (currently dormant — see PENDING.C1)
 ```
+
+The bootstrap GCP Service Account key is **not** SOPS-encrypted. It is generated fresh on every deploy by `make gcp-bootstrap-key` (which runs `gcloud iam service-accounts keys create`, scp's the JSON to the VM, and applies it as Secret `gcp-bootstrap-sa-key` in `crossplane-system`). The SA is recreated by every `tf-apply`, so any encrypted-at-rest copy would be stale within one deploy cycle.
 
 Each section below tells you **what credentials you need**, **where to get them**, and **the exact YAML to encrypt**.
 
 ### 4.1 `anthropic.enc.yaml` — Claude API key
 
-**What it does:** powers the planner (Sonnet 4.5), analyst, and writer LLM calls. Mounted into the kagent `app` container as `ANTHROPIC_API_KEY` env var (DD-20). Same value backs the `ModelConfig` CRD via `apiKeySecretRef`.
+**What it does:** powers the planner, analyst, and writer LLM calls (Sonnet 4.5 via `model-primary` ModelConfig). Mounted into the kagent `app` container as `ANTHROPIC_API_KEY` env var. Same value backs the `ModelConfig` CRD via `apiKeySecretRef`.
 
 **How to obtain:**
 1. Go to https://console.anthropic.com/settings/keys
@@ -145,9 +146,9 @@ rm /tmp/anthropic.plaintext.yaml
 OPENAI_API_KEY: sk-proj-...
 ```
 
-### 4.3 `langfuse.enc.yaml` — Langfuse Cloud (DD-24 v1.6)
+### 4.3 `langfuse.enc.yaml` — Langfuse Cloud
 
-**What it does:** dual-export of OTel traces from `opentelemetry-collector` to Langfuse Cloud, AND Grafana Infinity datasource auth for live querying (`https://us.cloud.langfuse.com/api/public/observations`). Also drives `budget-controller` cost polling (DD-28).
+**What it does:** dual-export of OTel traces from `opentelemetry-collector` to Langfuse Cloud, AND Grafana Infinity datasource auth for live querying (`https://us.cloud.langfuse.com/api/public/observations`). Also drives `budget-controller` cost polling.
 
 **How to obtain:**
 1. Sign up at https://us.cloud.langfuse.com (free tier = 50k events/month, sufficient for prototype)
@@ -163,47 +164,26 @@ LANGFUSE_HOST: https://us.cloud.langfuse.com
 
 > If you sign up on the EU region instead, change `LANGFUSE_HOST` to `https://cloud.langfuse.com`. The `make langfuse-secret` target derives `LANGFUSE_OTLP_ENDPOINT` and `LANGFUSE_BASIC_AUTH` from these three values.
 
-### 4.4 `crossplane-gcp-creds.enc.yaml` — GCP SA for Crossplane provider
+### 4.4 Bootstrap SA key — ephemeral, not SOPS-encrypted
 
-**What it does:** Crossplane's `provider-gcp-{storage,iam,cloudplatform}` family uses this Service Account JSON to provision per-agent GCS buckets, GCP SAs, SA keys, and project IAM bindings.
+The bootstrap GCP Service Account (`whisperops-bootstrap@<project>.iam.gserviceaccount.com`) has unconditional `storage.admin`, `iam.serviceAccountAdmin`, `iam.serviceAccountKeyAdmin`, `resourcemanager.projectIamAdmin`, and `artifactregistry.writer`. Conditional bindings don't gate `*.create` operations (the resource doesn't have a name yet at create time), so they were removed in favor of unconditional bindings + naming-convention enforcement at the Backstage scaffolder layer.
 
-**How to obtain:**
-1. After `make tf-apply`, Terraform outputs the bootstrap SA email (`whisperops-bootstrap@<project>.iam.gserviceaccount.com`). It already has the right roles (DD-19: `storage.admin`, `iam.serviceAccountAdmin`, `iam.serviceAccountKeyAdmin`, `resourcemanager.projectIamAdmin` — all unconditional).
-2. Mint a key:
-   ```bash
-   gcloud iam service-accounts keys create /tmp/sa-key.json \
-     --iam-account=whisperops-bootstrap@<project>.iam.gserviceaccount.com
-   ```
-3. The JSON has literal newlines inside `private_key`. Crossplane requires a clean JSON string. Repair before encrypting:
-   ```bash
-   python3 -c "import json,sys; print(json.dumps(json.load(open('/tmp/sa-key.json'))))" > /tmp/sa-key.flat.json
-   ```
+Because `tf-apply` recreates this SA on every cycle, any stored key would go stale immediately. The deploy chain handles this:
 
-**Plaintext shape:**
-```yaml
-gcp_service_account_key_json: |
-  {"type": "service_account", "project_id": "...", "private_key": "-----BEGIN PRIVATE KEY-----\\n…", ...}
-```
-
-The pipe-string-with-`|` style is fine — but the value MUST be a single-line JSON (no real newlines inside the `private_key` field). When Crossplane reads this back, the `\\n` sequences become real newlines via JSON unmarshal.
-
-**Quick command to assemble:**
 ```bash
-{
-  echo "gcp_service_account_key_json: |"
-  cat /tmp/sa-key.flat.json | sed 's/^/  /'
-} > /tmp/crossplane-gcp-creds.plaintext.yaml
-
-SOPS_AGE_KEY_FILE=age.key sops --encrypt \
-  --input-type yaml --output-type yaml \
-  /tmp/crossplane-gcp-creds.plaintext.yaml > secrets/crossplane-gcp-creds.enc.yaml
-
-rm /tmp/sa-key.json /tmp/sa-key.flat.json /tmp/crossplane-gcp-creds.plaintext.yaml
+make gcp-bootstrap-key
+# Runs gcloud iam service-accounts keys create, scp's to the VM, applies as
+# Secret gcp-bootstrap-sa-key in crossplane-system. Crossplane providers
+# reference it via ProviderConfig.
 ```
 
-### 4.5 `supabase.enc.yaml` — dataset profile store
+You do not need a `crossplane-gcp-creds.enc.yaml` file. The previous SOPS-encrypted approach was deprecated.
 
-**What it does:** the platform-bootstrap Job uploads dataset profiles (column types, row counts, sample values) to a Supabase Postgres table. Read by Backstage at agent-creation time to populate the dataset dropdown metadata.
+### 4.5 `supabase.enc.yaml` — dataset profile store (currently dormant)
+
+**What it does (designed intent):** the platform-bootstrap Job uploads dataset profiles (column types, row counts, sample values) to a Supabase Postgres table. Read by Backstage at agent-creation time to populate the dataset dropdown metadata.
+
+**Current state:** No runtime component reads from Supabase. The Planner uses a literal `dataset_id` baked into its system prompt at scaffold time, not a runtime profile lookup. `platform-bootstrap-job` is dormant. The Secret is still expected by preflight checks; provide a valid Supabase project or accept the dormant state — see [`PENDING_whisperops.md §C1`](../.claude/sdd/features/PENDING_whisperops.md) for the product decision (delete / keep dormant / wire for real).
 
 **How to obtain:**
 1. https://supabase.com/dashboard → **New Project** (free tier OK)
@@ -286,13 +266,14 @@ After the `*.enc.yaml` files are encrypted with your keys, the platform layer ap
 
 | Secret | Target ns | Mechanism |
 |---|---|---|
-| `anthropic-api-key` | `kagent-system` | `kubectl create secret` from SOPS-decrypt (manual at deploy time) |
-| `kagent-openai` | `kagent-system` | same |
-| `langfuse-credentials` | `observability` | `make langfuse-secret` (DD-29) — derives 5 keys from the SOPS source |
-| `gcp-bootstrap-sa-key` | `crossplane-system` | manual `kubectl apply` — see [docs/OPERATIONS.md §1 Stage 5](OPERATIONS.md#stage-5--secrets-materialization) for the JSON-newline-repair step |
-| `supabase-credentials` | `whisperops-system` | platform-bootstrap Job reads via SOPS at runtime |
+| `anthropic-api-key` | `kagent-system` + replicated via Reflector to `agent-*` | `_anthropic-secret` Make target (invoked by `_vm-bootstrap`) decrypts via SOPS and applies |
+| `kagent-openai` | `kagent-system` | `kubectl create secret` from SOPS-decrypt |
+| `langfuse-credentials` | `observability` (source) + replicated to `whisperops-system` + `agent-*` via Reflector | `make langfuse-secret` decrypts, derives 5 keys, applies + annotates for Reflector |
+| `gcp-bootstrap-sa-key` | `crossplane-system` | `make gcp-bootstrap-key` (ephemeral, fresh per deploy) |
+| `ar-pull-secret-source` | `crossplane-system` (source) + replicated to `agent-*` via Reflector | Crossplane seed Job populates from `gcloud auth print-access-token`; 30-min rotation CronJob refreshes |
+| `supabase-credentials` | `whisperops-system` | Currently dormant — Job that would consume this is not invoked |
 
-The end-to-end ordering matters — see [OPERATIONS.md §1 Stage 5](OPERATIONS.md) for the canonical sequence.
+The deploy chain handles ordering automatically. `make deploy` is the canonical sequence; see [`OPERATIONS.md`](OPERATIONS.md) for the rollup walkthrough.
 
 ---
 
@@ -315,19 +296,19 @@ To wipe all secrets from a cluster (e.g. when rotating compromised credentials):
 ```bash
 kubectl -n kagent-system delete secret anthropic-api-key kagent-openai
 kubectl -n observability delete secret langfuse-credentials
-kubectl -n whisperops-system delete secret langfuse-credentials supabase-credentials
-kubectl -n crossplane-system delete secret gcp-bootstrap-sa-key
-kubectl -n agent-* delete secret ar-pull-secret langfuse-credentials anthropic-api-key
+kubectl -n crossplane-system delete secret gcp-bootstrap-sa-key ar-pull-secret-source
+# Reflector-replicated copies in agent-* and whisperops-system will be re-created
+# automatically once the source Secret is re-populated.
 ```
 
-Then re-run the materialization steps in §8 with fresh, rotated values.
+Then re-run the materialization steps in §8 with fresh, rotated values. The Make targets handle most of this automatically on the next `make deploy`.
 
 ---
 
 ## See also
 
-- [docs/OPERATIONS.md §1 Stage 5](OPERATIONS.md) — exact `kubectl create secret` invocations per Secret
-- [docs/SECURITY.md](SECURITY.md) — broader security model (RBAC, network policies, image signing)
-- [.sops.yaml](../.sops.yaml) — current creation rules (only operator-facing config file)
-- [Makefile](../Makefile) — `decrypt-secrets`, `langfuse-secret`, `ar-pull-secret` targets
-- DESIGN §13 (in `.claude/sdd/features/DESIGN_whisperops.md`) — decision log for security-relevant choices (DD-19 IAM Conditions removal, DD-29 langfuse-secret Makefile path)
+- [`OPERATIONS.md`](OPERATIONS.md) — operator handbook (deploy chain, agent lifecycle)
+- [`SECURITY.md`](SECURITY.md) — threat model, IAM scoping, residual risks
+- [`.sops.yaml`](../.sops.yaml) — current creation rules
+- [`Makefile`](../Makefile) — `decrypt-secrets`, `langfuse-secret`, `gcp-bootstrap-key` targets
+- [`DESIGN_whisperops.md`](../.claude/sdd/features/DESIGN_whisperops.md) — full security model and architecture

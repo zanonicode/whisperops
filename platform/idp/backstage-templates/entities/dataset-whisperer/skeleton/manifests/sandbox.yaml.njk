@@ -32,18 +32,18 @@ spec:
       containers:
         - name: sandbox
           image: us-central1-docker.pkg.dev/${{ values.project_id }}/whisperops-images/sandbox:latest
-          # DD-106: :latest is a mutable tag. With IfNotPresent, kubelet caches
-          # the first :latest digest and never re-pulls — meaning rebuilds
-          # don't reach existing pods even on rollout restart. Always-pull
-          # ensures any image rebuild reaches new pods. (Long-term fix:
-          # tag with content hash and bump tag in CI.)
+          # :latest is a mutable tag. With IfNotPresent, kubelet caches the
+          # first :latest digest and never re-pulls — meaning rebuilds don't
+          # reach existing pods even on rollout restart. Always-pull ensures
+          # any image rebuild reaches new pods. (Long-term fix: tag with
+          # content hash and bump tag in CI.)
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
           env:
-            # DD-104: AGENT_NAME used by mcp_server.py to namespace its tool
+            # AGENT_NAME is consumed by mcp_server.py to namespace its tool
             # name (`execute_python_<agent>`) so kagent's UNIQUE-on-tool.name
             # constraint doesn't reject the 2nd+ agent's sandbox registration.
             - name: AGENT_NAME

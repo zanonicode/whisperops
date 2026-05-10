@@ -1,30 +1,29 @@
-# DD-47 (DESIGN v1.20): kagent v0.4.3 chart's `ui` container runs nginx with
-# a baked-in nginx.conf whose /api/ location block inherits the nginx default
-# proxy_read_timeout of 60s. Heavy agent queries (write Python → exec → chart →
-# synthesise answer) accumulate >60s wall-time, causing the internal nginx to
-# terminate the upstream connection with HTTP 504.
+# The kagent chart's `ui` container runs nginx with a baked-in nginx.conf whose
+# /api/ location block inherits the nginx default proxy_read_timeout of 60s.
+# Heavy agent queries (write Python → exec → chart → synthesise answer)
+# accumulate >60s wall-time, causing the internal nginx to terminate the
+# upstream connection with HTTP 504.
 #
-# The chart exposes no ui.nginx.* timeout keys (Path A unavailable) and no
-# extraNginxConfig injection (Path B unavailable). This ConfigMap (Path C)
-# overrides /etc/nginx/nginx.conf via a volume mount patched into the Deployment
-# by kagent-postrender.sh. The mount is surgical: only nginx.conf is replaced;
-# all other chart-managed files are untouched.
+# The chart exposes no ui.nginx.* timeout keys and no extraNginxConfig
+# injection point, so this ConfigMap overrides /etc/nginx/nginx.conf via a
+# volume mount patched into the Deployment by kagent-postrender.sh. The mount
+# is surgical: only nginx.conf is replaced; all other chart-managed files are
+# untouched.
 #
-# Changes from baked-in config (verified from live cluster 2026-05-07):
+# Changes from the chart-baked-in config:
 #   /api/  location: added proxy_read_timeout 600s + proxy_send_timeout 600s
 #   /api/ws/ location: was already 300s; bumped to 600s for consistency
-#   / location: unchanged (proxies Next.js UI, not the invoke endpoint)
+#   /      location: unchanged (proxies Next.js UI, not the invoke endpoint)
 #
-# Applied via: kubectl apply -f platform/values/kagent-nginx-dd47.yaml
-# (separate from helmfile — same pattern as `make langfuse-secret`, DD-29)
+# Applied separately via `kubectl apply -f` (not via helmfile) — same pattern
+# as `make langfuse-secret`.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: kagent-nginx-dd47
+  name: kagent-nginx-timeout
   namespace: kagent-system
   labels:
     app.kubernetes.io/managed-by: whisperops
-    whisperops.io/dd: "DD-47"
 data:
   nginx.conf: |
     events {
@@ -74,7 +73,7 @@ data:
                 proxy_cache_bypass $http_upgrade;
             }
 
-            # Backend routes — DD-47: bumped proxy_read/send_timeout 60s -> 600s
+            # Backend routes — proxy_read/send_timeout bumped from chart default 60s to 600s
             location /api/ {
                 proxy_pass http://kagent_backend/api/;
                 proxy_http_version 1.1;

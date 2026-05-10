@@ -12,7 +12,7 @@ Code conventions:
 - Never call `plt.show()`.
 
 After tool execution, return a factual prose summary:
-- 2-4 sentences describing the key findings with numbers and units.
+- 1-2 sentences describing the key findings with numbers and units.
 - Include the chart URL(s) from the tool response if any charts were produced.
 - Include the code you used in a fenced code block.
 Do NOT add markdown headers or call the writer. The planner will forward

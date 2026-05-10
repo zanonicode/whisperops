@@ -1,8 +1,6 @@
-// Extracted per the ~200-line rule: route.ts reached 220 lines with invokeStream inline.
-//
-// Verified kagent /invoke/stream SSE event types (probed 2026-05-07):
+// kagent /invoke/stream SSE event types:
 //   frame format: "event: <type>\ndata: <json>\n\n"
-//   event: event      — agent messages (see type field inside data JSON)
+//   event: event       — agent messages (see type field inside data JSON)
 //   event: task_result — stream-complete marker; data contains full task_result
 //
 // Forwarding strategy for chat-frontend SSE protocol:
@@ -15,9 +13,9 @@
 //   unknown / ThoughtEvent          -> skip
 //   task_result event               -> data: [DONE]
 //
-// DD-49 (2026-05-07): split invokeStream into fetchInvokeResponse + processInvokeStream
-//   so route.ts can inspect the HTTP status before building the Response, enabling
-//   session-lifecycle recovery when kagent returns 404 "Session not found".
+// invokeStream is split into fetchInvokeResponse + processInvokeStream so route.ts
+// can inspect the HTTP status before building the Response, enabling session-lifecycle
+// recovery when kagent returns 404 "Session not found".
 
 interface KagentEvent {
   type?: string;

@@ -87,15 +87,6 @@ spec:
   tls:
     - hosts: [argocd.136.115.224.138.sslip.io]
 ---
-# (Removed) agent-housing-demo-external Ingress — DD-52 RESOLVED 2026-05-07.
-# Was a leftover from when housing-demo was a baseline component with hardcoded
-# IP. Each agent scaffolded via Backstage now provisions its own external
-# Ingress through the dataset-whisperer template (DD-53:
-# skeleton/manifests/ingress.yaml.njk), so platform-level external-access
-# should only manage PLATFORM ingresses (Backstage, ArgoCD, Grafana, Gitea).
-# Fresh deploy fails here because the agent-housing-demo namespace doesn't
-# exist yet — by design, no agents exist until operator scaffolds.
----
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

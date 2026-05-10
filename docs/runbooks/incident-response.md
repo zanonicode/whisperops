@@ -10,22 +10,22 @@
 ### Investigation
 ```bash
 # Check current spend status
-kubectl get events -n agent-{name}-{suffix} --field-selector reason=BudgetThreshold
+kubectl get events -n agent-{name} --field-selector reason=BudgetThreshold
 
 # Check which Deployments were scaled
-kubectl get deployments -n agent-{name}-{suffix}
+kubectl get deployments -n agent-{name}
 
 # Verify Langfuse for breakdown
-# Navigate to https://cloud.langfuse.com → filter by agent tag
+# Navigate to https://us.cloud.langfuse.com → filter by agent tag
 ```
 
 ### Resolution
 
 **Option A: Increase budget** (if spend was legitimate):
-1. Edit the kagent Agent CRD annotations: `whisperops.io/budget-usd: "20.00"` (new value)
+1. Edit the namespace annotation: `whisperops.io/budget-usd: "20.00"` (new value)
 2. ArgoCD will sync the updated annotation
-3. Budget controller will detect new limit on next poll cycle (≤ 60s)
-4. Scale Deployments back: `kubectl scale deployment --replicas=1 -n agent-{name}-{suffix} --all`
+3. budget-controller will detect the new limit on next poll cycle (≤ 60 s)
+4. Scale Deployments back: `kubectl scale deployment --replicas=1 -n agent-{name} --all`
 
 **Option B: Terminate agent** (if spend was runaway):
 1. Delete the agent PR/directory from Gitea
@@ -43,30 +43,31 @@ kubectl get deployments -n agent-{name}-{suffix}
 
 ### Investigation
 ```bash
-# Check sandbox Pod health
-kubectl get pods -n sandbox
-kubectl top pods -n sandbox
+# Check sandbox Pod health for the affected agent
+kubectl get pods -n agent-{name}
+kubectl top pods -n agent-{name}
 
 # Check for OOM kills
-kubectl describe pod <sandbox-pod> -n sandbox | grep -A5 "OOMKilled"
+kubectl describe pod -n agent-{name} -l app=sandbox | grep -A5 "OOMKilled"
 
 # Check execution logs
-kubectl logs deployment/sandbox -n sandbox --tail=100
+kubectl logs deployment/sandbox -n agent-{name} --tail=100
 ```
 
 ### Resolution
 
 **High timeout rate:**
-- If user code is inherently slow (large dataset operations), increase `EXECUTION_TIMEOUT_S` in sandbox values
-- If Online Retail II is the culprit (95 MB), consider adding sampling hint to Analyst prompt
+- If user code is inherently slow (large dataset operations), increase `EXECUTION_TIMEOUT_S` env var on the sandbox Deployment for that agent.
+- If Online Retail II is the culprit (~95 MB CSV / ~330 MB pandas in memory), consider adding a row-sampling hint to the Analyst prompt.
 
 **OOM events:**
-- Option A: Raise sandbox memory limit from 3GB to 4GB (VM has 32GB headroom):
+- Sandbox memory limit is 4 Gi today. To raise temporarily for one agent (VM has 32 GB headroom):
   ```bash
-  kubectl patch deployment sandbox -n sandbox --type='json' \
-    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"4Gi"}]'
+  kubectl patch deployment sandbox -n agent-{name} --type='json' \
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/resources/limits/memory","value":"6Gi"}]'
   ```
-- Option B: Enable row sampling in prompt for large datasets (update `agent-prompts` chart)
+- For a permanent change, update the sandbox memory in the Backstage skeleton `sandbox.yaml.njk` and re-scaffold (or `helm template` and `kubectl apply` for an existing agent).
+- Alternatively, enable row sampling in the Analyst prompt for large datasets.
 
 ---
 
@@ -78,37 +79,41 @@ kubectl logs deployment/sandbox -n sandbox --tail=100
 
 ### Investigation
 ```bash
-# Check Crossplane provider health
-kubectl get provider.pkg.crossplane.io provider-gcp
-kubectl describe provider.pkg.crossplane.io provider-gcp
+# Check Crossplane GCP family providers health
+kubectl get providers.pkg.crossplane.io
+# Expect: provider-gcp-storage, provider-gcp-iam, provider-gcp-cloudplatform,
+# provider-family-gcp — all INSTALLED=True HEALTHY=True
 
 # Check managed resource conditions
 kubectl get bucket -A
-kubectl describe bucket agent-{name}-{suffix} -n agent-{name}-{suffix}
+kubectl describe bucket agent-{name} -n agent-{name}
 
 # Look for specific errors
-kubectl logs deployment/provider-gcp -n crossplane-system | tail -50
+kubectl logs -n crossplane-system -l pkg.crossplane.io/provider | tail -50
 ```
 
 ### Resolution
 
-**Provider-GCP not healthy:**
+**A provider is not healthy:**
 ```bash
-# Restart provider Pod
-kubectl rollout restart deployment/provider-gcp -n crossplane-system
+# Force-restart all Crossplane provider Pods (they re-read the SA key Secret on start)
+kubectl delete pod -n crossplane-system -l pkg.crossplane.io/provider
 ```
 
 **Resource stuck in Deleting:**
 ```bash
-# Remove finalizer (last resort — data may not be deleted from GCP)
-kubectl patch bucket agent-{name}-{suffix} -n agent-{name}-{suffix} \
+# Remove finalizer (last resort — GCP-side resource may not be deleted)
+kubectl patch bucket agent-{name} -n agent-{name} \
   --type='json' -p='[{"op":"remove","path":"/metadata/finalizers"}]'
 ```
 
-**Bootstrap SA key expired:**
-- Rotate the SA key: generate new key in GCP Console, encrypt with SOPS, commit
-- Re-run `make decrypt-secrets` to update the cluster Secret
-- Restart Crossplane provider Pod
+**Bootstrap SA key stale or rotated underneath the cluster:**
+- The bootstrap SA key is regenerated on every `make deploy` via `make gcp-bootstrap-key`. To rotate mid-cycle:
+  ```bash
+  make gcp-bootstrap-key PROJECT_ID=<id>
+  kubectl delete pod -n crossplane-system -l pkg.crossplane.io/provider
+  ```
+- Providers re-read the `gcp-bootstrap-sa-key` Secret on container restart.
 
 ---
 

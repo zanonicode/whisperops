@@ -28,7 +28,7 @@ ZONE        := $(if $(TFVARS_ZONE),$(TFVARS_ZONE),us-central1-a)
 # VM_IP: auto-derive from Terraform output when not passed explicitly.
 VM_IP ?= $$(terraform -chdir=$(TERRAFORM_DIR) output -raw vm_external_ip)
 
-# DD-81: SSH keepalive flags applied to every gcloud compute ssh call.
+# SSH keepalive flags applied to every gcloud compute ssh call.
 # Catches asymmetric SSH death (remote dies, local hangs) within ~90s.
 SSH_FLAGS := --ssh-flag="-o ServerAliveInterval=30" --ssh-flag="-o ServerAliveCountMax=3"
 
@@ -60,16 +60,16 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 	echo "  ✓ tfstate bucket gs://$$BUCKET exists"
 	@RESOLVED=$$(dig +short cnoe.localtest.me 2>/dev/null | head -1); \
 	if [ "$$RESOLVED" != "127.0.0.1" ]; then \
-	    echo "  ✗ cnoe.localtest.me resolved to '$$RESOLVED' (expected 127.0.0.1) — required for SSH-tunnel access to Backstage/Keycloak (DD-38 Opção I)"; \
+	    echo "  ✗ cnoe.localtest.me resolved to '$$RESOLVED' (expected 127.0.0.1) — required for SSH-tunnel access to Backstage/Keycloak"; \
 	    exit 1; \
 	fi
 	@echo "  ✓ cnoe.localtest.me → 127.0.0.1"
 	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
 		|| (echo "  ✗ SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
 	@echo "  ✓ SOPS_AGE_KEY_FILE points at a readable key"
-	@# DD-74: crossplane-gcp-creds.enc.yaml deprecated — SA key now generated \
-	@# fresh per deploy via `make gcp-bootstrap-key` (was stale on every \
-	@# destroy+create cycle since SA recreation invalidates the encrypted key). \
+	@# The bootstrap SA key is generated fresh per deploy via `make gcp-bootstrap-key` \
+	@# rather than stored encrypted: tf-apply recreates the SA on every destroy+create \
+	@# cycle, which invalidates any previously-issued key. \
 	@for f in anthropic openai supabase langfuse; do \
 		[ -f $(SECRETS_DIR)/$$f.enc.yaml ] && grep -q '^sops:' $(SECRETS_DIR)/$$f.enc.yaml \
 			|| (echo "  ✗ secrets/$$f.enc.yaml missing or unencrypted" && exit 1); \
@@ -86,8 +86,8 @@ deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key build-ima
 	@# wait) make the chain robust against tf-apply→VM-ready and idpbuilder timing.
 	@# platform-bootstrap is invoked INSIDE _vm-bootstrap, not here — it must run
 	@# against the kind cluster on the VM, not the operator's local kubectl context.
-	@# DD-91: upload-datasets runs after tf-apply (which creates the bucket) so the
-	@# shared CSV data is available before any agent scaffold queries it.
+	@# upload-datasets runs after tf-apply (which creates the bucket) so the shared
+	@# CSV data is available before any agent scaffold queries it.
 	@echo "✓ Deploy complete. Run 'make smoke-test' to verify."
 
 tf-init: ## Initialise Terraform backend
@@ -99,14 +99,14 @@ tf-plan: tf-init ## Show Terraform plan
 tf-apply: tf-init ## Apply Terraform (provisions VM, buckets, IAM)
 	terraform -chdir=$(TERRAFORM_DIR) apply -var-file=envs/demo/terraform.tfvars -auto-approve
 
-# ── VM bring-up (DD-34) ────────────────────────────────────────────────────────
+# ── VM bring-up ────────────────────────────────────────────────────────────────
 
 copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.yaml, node_modules, macOS metadata)
 	@echo "→ Copying repo to whisperops-vm"
-	@# Past incident (2026-05-07 chained deploy): when copy-repo runs straight after
-	@# tf-apply, the VM is fresh (status=RUNNING) but SSH on :22 may not be listening
-	@# for another 30-90s. The tar | ssh below then fails fast with "Network is
-	@# unreachable" and aborts the whole chain. Poll SSH until it answers.
+	@# After tf-apply returns the VM is RUNNING but sshd may not yet be listening
+	@# (30-90s window). Without polling, the tar | ssh below fails fast with
+	@# "Network is unreachable" and aborts the whole chain. Poll SSH until it
+	@# answers.
 	@echo "  ↳ Waiting for SSH on whisperops-vm (up to 5 min)"
 	@for i in $$(seq 1 60); do \
 		if gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='exit 0' >/dev/null 2>&1; then \
@@ -115,10 +115,9 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ SSH not ready after 5 min"; exit 1; fi; \
 		printf "."; sleep 5; \
 	done
-	@# Past incident (2026-05-07 deploy retry): macOS tar emitted AppleDouble
-	@# `._*` metadata files alongside YAMLs in helm chart templates dirs;
-	@# kubectl apply -f then choked with "control characters are not allowed".
-	@# Excluding them keeps the archive clean for Linux consumers.
+	@# macOS tar emits AppleDouble `._*` metadata files alongside YAMLs in helm
+	@# chart templates dirs; kubectl apply -f then chokes with "control characters
+	@# are not allowed". Exclude them so the archive stays clean for Linux consumers.
 	@tar \
 		--exclude='.terraform' \
 		--exclude='.git' \
@@ -133,29 +132,28 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		--command='mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
 
-gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply as Secret in crossplane-system
+gcp-bootstrap-key: ## Generate fresh whisperops-bootstrap SA key + apply as Secret in crossplane-system
 	@# tf-apply destroys + recreates the bootstrap SA on every deploy cycle, which
-	@# wipes any previously-issued keys. The previous design encrypted a key in
-	@# secrets/crossplane-gcp-creds.enc.yaml — that file goes stale every cycle
-	@# (key id mismatch -> "invalid_grant: Invalid JWT Signature" on Crossplane
-	@# providers, blocking all GCP-backed agent scaffolds). Fix: generate a fresh
-	@# key on each deploy from the operator's authenticated gcloud session, scp
-	@# to the VM, and apply directly as the Secret the ProviderConfig already
+	@# wipes any previously-issued keys. Encrypting a key in
+	@# secrets/crossplane-gcp-creds.enc.yaml goes stale every cycle (key id
+	@# mismatch -> "invalid_grant: Invalid JWT Signature" on Crossplane providers,
+	@# blocking all GCP-backed agent scaffolds). Instead, generate a fresh key on
+	@# each deploy from the operator's authenticated gcloud session, scp to the
+	@# VM, and apply directly as the Secret the ProviderConfig already
 	@# references. No SOPS, no ExternalSecret, no stale state.
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Materializing whisperops-bootstrap SA key as gcp-bootstrap-sa-key Secret"
-	@# DD-97: gcp-bootstrap-key runs ~T+2min after VM creation, but cloud-init is
-	@# still installing /usr/local/bin/kubectl AND setting up sudo NOPASSWD at that
-	@# point. Without this poll, DD-80's set -e correctly aborts on either
-	@# "sudo: a password is required" or "kubectl: command not found" — but that
-	@# breaks the deploy chain. Mirror copy-repo's SSH:22 poll pattern: wait up to
-	@# 5 min for cloud-init to ready the toolchain we need.
+	@# This target runs ~T+2min after VM creation, while cloud-init is still
+	@# installing /usr/local/bin/kubectl AND setting up sudo NOPASSWD. Without
+	@# this poll, `set -e` correctly aborts on either "sudo: a password is
+	@# required" or "kubectl: command not found" — but that breaks the deploy
+	@# chain. Mirror copy-repo's SSH:22 poll pattern: wait for cloud-init to
+	@# ready the toolchain we need. Budget must accommodate worst-case apt
+	@# retries (Ubuntu mirror flakes can stall .deb downloads up to 15min) +
+	@# kubectl install + sudoers — 20min = 240 iterations × 5s, aligned with
+	@# the cloud-init wait gate budget. We probe `kubectl get nodes` (cluster
+	@# API readiness), not just `kubectl version --client`.
 	@echo "  ↳ Waiting for cloud-init to ready kubectl + sudo NOPASSWD (up to 20 min)"
-	@# DD-97 followup: 5min was too short. Cloud-init order is: apt-get install
-	@# docker (DD-98 retries can take up to 15min) → install kubectl → setup sudoers.
-	@# Budget must accommodate worst-case apt retries + kubectl install + sudoers.
-	@# 20min = 240 iterations × 5s. Aligns with DD-95's 1500s cloud-init budget.
-	@# DD-113: probes cluster API readiness, not just kubectl client
 	@for i in $$(seq 1 240); do \
 		if gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
 		     --command='sudo -n /usr/local/bin/kubectl get nodes' \
@@ -180,21 +178,21 @@ gcp-bootstrap-key: ## DD-74: generate fresh whisperops-bootstrap SA key + apply 
 		rm -f /tmp/gcp-bootstrap-key.json'
 	@echo "  ✓ gcp-bootstrap-sa-key Secret applied in crossplane-system"
 
-build-images: ## Build whisperops container images on the VM and push to Artifact Registry (DD-66)
+build-images: ## Build whisperops container images on the VM and push to Artifact Registry
 	@echo "→ Building whisperops images on whisperops-vm"
 	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
 		--command='cd /tmp/whisperops && bash scripts/build-images.sh'
 	@echo "  ✓ Image build complete"
 
 deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
-	@# Past incident (2026-05-07 chained deploy): copy-repo only waits for SSH:22,
-	@# but the VM's startup-script keeps running afterwards: it installs helmfile,
-	@# sops, kind, then runs `idpbuilder create` (~5-10 min) and waits up to 900s
-	@# for all ArgoCD apps to become Synced/Healthy. _vm-bootstrap below assumes
-	@# both the tooling and the IDP layer are already up. Without this wait we get
-	@# either "helmfile: command not found" (if startup is still installing) or a
-	@# missing kubeconfig (if kind cluster isn't created yet). Block until the
-	@# startup-script logs its terminal sentinel "whisperops bootstrap complete".
+	@# copy-repo only waits for SSH:22, but the VM's startup-script keeps running
+	@# afterwards: it installs helmfile, sops, kind, then runs `idpbuilder create`
+	@# (~5-10 min) and waits up to 900s for all ArgoCD apps to become Synced/Healthy.
+	@# _vm-bootstrap below assumes both the tooling and the IDP layer are already
+	@# up. Without this wait we get either "helmfile: command not found" (if startup
+	@# is still installing) or a missing kubeconfig (if kind cluster isn't created
+	@# yet). Block until the startup-script logs its terminal sentinel
+	@# "whisperops bootstrap complete".
 	@echo "→ Waiting for VM startup-script to complete (IDP layer ready, up to 25 min)"
 	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=' \
 		for i in $$(seq 1 150); do \
@@ -219,10 +217,10 @@ deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
 _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by deploy-vm)
 	@bash -c 'set -euo pipefail; \
 	cd /tmp/whisperops; \
-	# Past incident (2026-05-07 deploy retry): kubectl/helm calls inside this \
-	# target ran with the SSH user default kubeconfig (~/.kube/config which is \
-	# absent for OS-Login users), causing "connection refused 127.0.0.1:8080". \
-	# Exporting KUBECONFIG up-front fixes all subsequent calls in one shot. \
+	# kubectl/helm calls inside this target run as the SSH user, whose default \
+	# ~/.kube/config does not exist for OS-Login users (causing \
+	# "connection refused 127.0.0.1:8080"). Export KUBECONFIG up-front so all \
+	# subsequent calls share the cluster-wide kubeconfig. \
 	export KUBECONFIG=/root/.kube/config; \
 	export HELM_PLUGINS=/usr/local/share/helm/plugins; \
 	export SOPS_AGE_KEY_FILE=/tmp/whisperops/age.key; \
@@ -230,24 +228,27 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	DERIVED_IP=$$(curl -sf -H "Metadata-Flavor: Google" \
 		http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip); \
 	echo "  VM_IP=$$DERIVED_IP"; \
-	echo "→ Deriving PROJECT_ID from GCP metadata server (DD-105)"; \
+	echo "→ Deriving PROJECT_ID from GCP metadata server"; \
 	PROJECT_ID_DERIVED=$$(curl -sf -H "Metadata-Flavor: Google" \
 		http://metadata.google.internal/computeMetadata/v1/project/project-id); \
 	echo "  PROJECT_ID=$$PROJECT_ID_DERIVED"; \
-	echo "→ Rewriting Backstage host references (DD-36)"; \
+	echo "→ Rewriting Backstage host references"; \
 	bash platform/scripts/rewrite-backstage-hosts.sh "$$DERIVED_IP"; \
-	echo "→ Materializing anthropic-api-key Secret in kagent-system (DD-83)"; \
+	echo "→ Materializing anthropic-api-key Secret in kagent-system"; \
 	$(MAKE) _anthropic-secret; \
 	echo "→ Applying helmfile (application platform layer)"; \
+	# helmfile diffs all releases up-front in parallel; some CRDs may not exist \
+	# yet on a fresh cluster, so skip-diff-on-install avoids spurious failures. \
 	helmfile -f platform/helmfile.yaml.gotmpl apply --skip-diff-on-install; \
-	# DD-38: Keycloak scale-to-zero disabled — Opção I keeps Keycloak active for OIDC login via tunnel. \
-	# Re-enable when Opção L (custom Backstage image with guest provider) lands. See DESIGN §15 #22. \
+	# Keycloak scale-to-zero is intentionally disabled: Keycloak must stay active \
+	# to serve OIDC login via the SSH tunnel. Re-enable only when Backstage moves \
+	# to a guest-auth provider that does not require Keycloak. \
 	# bash platform/values/keycloak-postrender.sh \
-	echo "→ DD-105: Baking VM IP and project ID into Backstage scaffolder template defaults"; \
+	echo "→ Baking VM IP and project ID into Backstage scaffolder template defaults"; \
 	sed -i "s/__BASE_DOMAIN__/$${DERIVED_IP}.sslip.io/g; s/__PROJECT_ID__/$${PROJECT_ID_DERIVED}/g" \
 		/tmp/whisperops/platform/idp/backstage-templates/entities/dataset-whisperer/template.yaml; \
 	echo "  ✓ Sentinel placeholders replaced in template.yaml"; \
-	echo "→ Syncing Backstage templates to Gitea (DD-40)"; \
+	echo "→ Syncing Backstage templates to Gitea"; \
 	{ \
 	    GITEA_PASS=$$(kubectl get secret -n gitea gitea-credential -o jsonpath="{.data.password}" | base64 -d); \
 	    GITEA_PASS_ENC=$$(printf %s "$${GITEA_PASS}" | jq -sRr @uri); \
@@ -262,25 +263,25 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	    if [ -d .git ] && git diff --cached --quiet; then \
 	        echo "  ↳ No template changes to push"; \
 	    elif [ -d .git ]; then \
-	        git -c user.email=ci@whisperops.io -c user.name=whisperops-ci commit -m "DD-40: sync from whisperops repo"; \
+	        git -c user.email=ci@whisperops.io -c user.name=whisperops-ci commit -m "sync Backstage templates from whisperops repo"; \
 	        git push origin main 2>&1 | tail -3 && echo "  ✓ Templates synced to Gitea"; \
 	    fi; \
 	    cd - >/dev/null; rm -rf "$$REPO_DIR"; \
 	    kill $$PF_PID 2>/dev/null; trap - EXIT INT TERM; \
 	}; \
-	echo "→ Pushing whisperops repo to Gitea + applying ArgoCD root-app (DD-63)"; \
+	echo "→ Pushing whisperops repo to Gitea + applying ArgoCD root-app"; \
 	$(MAKE) _push-whisperops-to-gitea \
-		|| echo "  ⚠ DD-63 Gitea push failed; bring-up continues — ArgoCD will not sync platform apps until resolved"; \
+		|| echo "  ⚠ Gitea push failed; bring-up continues — ArgoCD will not sync platform apps until resolved"; \
 	echo "→ Materializing langfuse-credentials Secret"; \
 	$(MAKE) langfuse-secret; \
 	echo "→ Regenerating external Ingresses"; \
 	$(MAKE) external-ingresses VM_IP="$$DERIVED_IP"; \
-	echo "→ Materializing whisperops-system Namespace + platform-config skeleton (DD-50)"; \
+	echo "→ Materializing whisperops-system Namespace + platform-config skeleton"; \
 	kubectl apply -f platform/whisperops-system/platform-config.yaml \
 		|| echo "  ⚠ platform-config.yaml apply failed; bring-up continues"; \
-	echo "→ Deriving registry_url (PROJECT_ID_DERIVED already set at top of target — DD-105)"; \
+	echo "→ Deriving registry_url (PROJECT_ID_DERIVED already set at top of target)"; \
 	REGISTRY_URL="us-central1-docker.pkg.dev/$${PROJECT_ID_DERIVED}/whisperops-images"; \
-	echo "→ Updating platform-config ConfigMap with live VM IP and registry_url (DD-50)"; \
+	echo "→ Updating platform-config ConfigMap with live VM IP and registry_url"; \
 	kubectl create configmap platform-config -n whisperops-system \
 		--from-literal=base_domain="$$DERIVED_IP.sslip.io" \
 		--from-literal=registry_url="$$REGISTRY_URL" \
@@ -294,7 +295,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 		|| echo "  ⚠ platform-bootstrap apply failed; bring-up continues. Fix prereqs and re-run \`make platform-bootstrap\` standalone."; \
 	echo "✓ VM bring-up complete"'
 
-_push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo, apply ArgoCD root-app (run inside VM)
+_push-whisperops-to-gitea: ## Create whisperops Gitea org+repo, push repo, apply ArgoCD root-app (run inside VM)
 	@bash -c 'set -euo pipefail; \
 	cd /tmp/whisperops; \
 	export KUBECONFIG=/root/.kube/config; \
@@ -317,7 +318,7 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 	elif [ "$$HTTP_CODE" = "422" ]; then \
 		echo "  ↳ Org whisperops already exists — skipping"; \
 	else \
-		echo "  ✗ Org creation returned HTTP $$HTTP_CODE — aborting DD-63"; exit 1; \
+		echo "  ✗ Org creation returned HTTP $$HTTP_CODE — aborting"; exit 1; \
 	fi; \
 	echo "  ↳ Creating Gitea repo '\''whisperops/whisperops'\'' (idempotent)"; \
 	HTTP_CODE=$$(curl -s -o /dev/null -w "%{http_code}" \
@@ -330,11 +331,11 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 	elif [ "$$HTTP_CODE" = "409" ]; then \
 		echo "  ↳ Repo whisperops/whisperops already exists — skipping creation"; \
 	else \
-		echo "  ✗ Repo creation returned HTTP $$HTTP_CODE — aborting DD-63"; exit 1; \
+		echo "  ✗ Repo creation returned HTTP $$HTTP_CODE — aborting"; exit 1; \
 	fi; \
 	echo "  ↳ Pushing /tmp/whisperops to gitea whisperops/whisperops"; \
-	# URL-encode Gitea password via jq @uri (memory observation 1533): admin \
-	# password contains URL-reserved chars; embedding raw breaks git URL parser. \
+	# URL-encode Gitea password via jq @uri: the admin password contains \
+	# URL-reserved characters; embedding it raw breaks git's URL parser. \
 	GITEA_PASS_ENC=$$(printf %s "$${GITEA_PASS}" | jq -sRr @uri); \
 	PUSH_REMOTE="http://giteaAdmin:$${GITEA_PASS_ENC}@127.0.0.1:13001/whisperops/whisperops.git"; \
 	# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh \
@@ -346,7 +347,7 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
 		add -A; \
 	git -C /tmp/whisperops -c user.email=ci@whisperops.io -c user.name=whisperops-ci \
-		commit -q -m "whisperops snapshot for ArgoCD reconciliation (DD-63)"; \
+		commit -q -m "whisperops snapshot for ArgoCD reconciliation"; \
 	git -C /tmp/whisperops remote add gitea-push "$${PUSH_REMOTE}"; \
 	git -C /tmp/whisperops push gitea-push main:main --force 2>&1 | tail -5; \
 	git -C /tmp/whisperops remote remove gitea-push 2>/dev/null || true; \
@@ -357,11 +358,13 @@ _push-whisperops-to-gitea: ## DD-63: Create whisperops Gitea org+repo, push repo
 	echo "  ✓ root-app applied — ArgoCD will register 8 child apps and sync from whisperops/whisperops.git"; \
 	echo "  Note: initial sync may take 2-5 min; check with: kubectl get app -n argocd"'
 
-# ── Teardown (DD-32) ───────────────────────────────────────────────────────────
+# ── Teardown ───────────────────────────────────────────────────────────────────
 # Order matters: Crossplane Managed Resources must be drained BEFORE Terraform
 # tears down the bootstrap SA / VPC, otherwise GCP resources (per-agent buckets,
 # SAs, IAM bindings created by Backstage-scaffolded agents) become orphaned —
 # they live outside both tfstate and any remaining controller's reach.
+# Buckets must also be emptied BEFORE drain, because GCS rejects DELETE on
+# non-empty buckets and Crossplane finalizers will then hang.
 #
 # The Terraform-managed datasets bucket sets force_destroy=true (demo-only;
 # guarded by the confirmation prompt below). Per-agent artifact buckets created
@@ -395,7 +398,7 @@ destroy: ## Tear down EVERYTHING: empty buckets → drain Crossplane → terrafo
 	@echo "✓ Teardown complete."
 
 _drop-argo-workflows-crds: ## Drop Argo Workflows CRDs from the VM-side kind cluster (idempotent)
-	@echo "→ Removing Argo Workflows CRDs (DD-35; via VM SSH)"
+	@echo "→ Removing Argo Workflows CRDs (via VM SSH)"
 	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='\
 		sudo kubectl delete crd \
 			workflows.argoproj.io \
@@ -411,11 +414,10 @@ _drop-argo-workflows-crds: ## Drop Argo Workflows CRDs from the VM-side kind clu
 
 drain-crossplane: ## Delete all Crossplane GCP Managed Resources on the VM-side cluster and wait for finalizers
 	@echo "→ Draining Crossplane Managed Resources (*.gcp.upbound.io) via VM SSH"
-	@# DD-39 Item 6 (post-mortem): kubectl operations MUST go through the VM, not local
-	@# kubectl. Local context may point to an unrelated cluster (EKS, etc.) which would
-	@# (a) silently no-op the drain, leaving GCP orphans after terraform destroy, and
-	@# (b) destructively act on the wrong cluster (e.g. _drop-argo-workflows-crds
-	@# previously deleted CRDs from a remote EKS cluster). All cluster-state work
+	@# kubectl operations MUST go through the VM, not the operator's local kubectl.
+	@# A local context may point at an unrelated cluster (EKS, etc.) which would
+	@# (a) silently no-op the drain, leaving GCP orphans after terraform destroy,
+	@# and (b) destructively act on the wrong cluster. All cluster-state work
 	@# happens INSIDE the VM via gcloud compute ssh.
 	@# Connectivity check + drain logic must be in ONE recipe line (single subshell)
 	@# so the early-exit on VM-gone actually stops execution; multi-line Make recipes
@@ -460,11 +462,11 @@ drain-crossplane: ## Delete all Crossplane GCP Managed Resources on the VM-side 
 _clean-orphan-firewalls: ## Delete any non-TF firewall rules in whisperops-vpc that would block VPC destroy
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Cleaning orphan firewall rules in whisperops-vpc + default networks"
-	@# Past incident (2026-05-07 destroy): firewall 'allow-kind-ingress-vpc' was
-	@# created manually pre-DD-39, never imported to TF state. terraform destroy
-	@# blocked on "network resource is already being used by 'firewalls/...'".
-	@# This step deletes any firewall rule referencing whisperops-vpc that TF
-	@# does not own, so the VPC destroy can proceed cleanly.
+	@# Manually-created firewall rules referencing whisperops-vpc are never
+	@# imported to TF state. terraform destroy then blocks on
+	@# "network resource is already being used by 'firewalls/...'". Delete any
+	@# firewall rule referencing whisperops-vpc that TF does not own so the VPC
+	@# destroy can proceed cleanly.
 	@TF_FW_NAMES=$$(terraform -chdir=$(TERRAFORM_DIR) state list 2>/dev/null | grep firewall | awk -F'"' '{print $$2}' | sort -u); \
 	ALL_FW=$$(gcloud compute firewall-rules list --project=$(PROJECT_ID) \
 		--filter="network:(whisperops-vpc OR default) AND name~^allow-kind" \
@@ -480,19 +482,19 @@ _clean-orphan-firewalls: ## Delete any non-TF firewall rules in whisperops-vpc t
 _clean-orphan-iam-bindings: ## Remove project IAM bindings whose principals are 'deleted:' (post-destroy)
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Cleaning ghost IAM bindings (deleted:* members) in $(PROJECT_ID)"
-	@# Past incident (2026-05-07 destroy): after terraform destroyed SAs, their
-	@# project-level IAM bindings remained as "deleted:serviceAccount:...?uid=..."
-	@# entries. These accumulate across deploy/destroy cycles — we observed two
-	@# distinct UIDs for the same SA email after a single re-deploy. Logic in
+	@# After terraform destroys SAs, their project-level IAM bindings remain as
+	@# "deleted:serviceAccount:...?uid=..." entries. These accumulate across
+	@# deploy/destroy cycles — multiple distinct UIDs can appear for the same SA
+	@# email after re-deploys. Logic in
 	@# platform/scripts/clean-orphan-iam-bindings.py (atomic set-iam-policy).
 	@python3 platform/scripts/clean-orphan-iam-bindings.py $(PROJECT_ID)
 	@echo "  ✓ Ghost IAM bindings cleaned"
 
-_clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLANE=1 bypasses Crossplane drain (DD-94)
+_clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLANE=1 bypasses Crossplane drain
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
-	@echo "→ Deleting orphan agent-* GCS buckets in $(PROJECT_ID) (DD-94)"
-	@# When make destroy SKIP_CROSSPLANE=1 FORCE=1 is used (gotcha #3 recovery
-	@# for stuck Crossplane finalizers), Crossplane is not drained and its GCS
+	@echo "→ Deleting orphan agent-* GCS buckets in $(PROJECT_ID)"
+	@# When make destroy SKIP_CROSSPLANE=1 FORCE=1 is used (recovery path for
+	@# stuck Crossplane finalizers), Crossplane is not drained and its GCS
 	@# Bucket CRs are never finalized. The buckets remain in GCP after VM teardown.
 	@# empty-buckets catches these too, but only empties them — it does not delete
 	@# the bucket itself (deletion is left to Crossplane or terraform). With
@@ -509,12 +511,12 @@ _clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLA
 empty-buckets: ## Empty Crossplane-owned + TF-managed datasets buckets (defensive — destroy path)
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Emptying buckets in $(PROJECT_ID) (Crossplane-labeled + agent-* prefix + datasets)"
-	@# Past incident (2026-05-07 destroy): the TF-managed `whisperops-datasets`
-	@# bucket blocked terraform destroy because state had force_destroy=false even
-	@# though main.tf set true (state was created before the code change). Emptying
-	@# defensively here makes destroy idempotent regardless of state drift.
-	@# We also catch agent-* Crossplane buckets by name prefix as fallback when the
-	@# `managed_by=crossplane` label is missing or listing is permissions-blocked.
+	@# The TF-managed `whisperops-datasets` bucket can block terraform destroy if
+	@# tfstate ever drifts to force_destroy=false (e.g. state predates a main.tf
+	@# change). Emptying defensively here makes destroy idempotent regardless of
+	@# state drift. Also catch agent-* Crossplane buckets by name prefix as
+	@# fallback when the `managed_by=crossplane` label is missing or listing is
+	@# permissions-blocked.
 	@BUCKETS=$$( \
 		( gcloud storage buckets list --project=$(PROJECT_ID) --format="value(name)" \
 			--filter="labels.managed_by=crossplane" 2>/dev/null; \
@@ -543,10 +545,9 @@ empty-buckets: ## Empty Crossplane-owned + TF-managed datasets buckets (defensiv
 # ── Platform bootstrap ─────────────────────────────────────────────────────────
 
 platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profiles → Supabase)
-	@# Past incident (2026-05-07 deploy retry): the previous form here was
-	@# `kubectl apply -f templates/` — but those are Helm templates with
-	@# `{{ .Release.Namespace }}` etc., not rendered K8s manifests. kubectl
-	@# choked on the `{{ }}` syntax. Render via `helm template` first.
+	@# The files under templates/ are Helm templates (`{{ .Release.Namespace }}`,
+	@# etc.), not rendered K8s manifests. `kubectl apply -f templates/` would choke
+	@# on the `{{ }}` syntax — render via `helm template` first.
 	@kubectl get namespace platform >/dev/null 2>&1 || kubectl create namespace platform
 	@helm template platform-bootstrap platform/helm/platform-bootstrap-job \
 		--namespace=platform \
@@ -557,7 +558,7 @@ regenerate-profiles: ## Re-run platform-bootstrap to refresh dataset profiles in
 	kubectl delete job platform-bootstrap -n platform --ignore-not-found
 	$(MAKE) platform-bootstrap
 
-# ── Langfuse credentials (DD-29) ───────────────────────────────────────────────
+# ── Langfuse credentials ───────────────────────────────────────────────────────
 # SOPS-decrypts secrets/langfuse.enc.yaml → langfuse-credentials Secret in
 # observability ns. Used by OTel collector (otlphttp/langfuse exporter) and by
 # Grafana (Infinity datasource Basic auth env-var substitution). Re-run after
@@ -588,14 +589,14 @@ langfuse-secret: ## Materialize langfuse-credentials Secret from SOPS-encrypted 
 		--overwrite
 	@echo "  ✓ langfuse-credentials Secret applied in observability namespace (Reflector annotations set for whisperops-system)"
 
-# ── Anthropic API key (DD-83) ──────────────────────────────────────────────────
+# ── Anthropic API key ──────────────────────────────────────────────────────────
 # SOPS-decrypts secrets/anthropic.enc.yaml → anthropic-api-key Secret in
 # kagent-system ns (key: api-key). Called by _vm-bootstrap BEFORE helmfile apply
 # so the kagent `app` container (which reads ANTHROPIC_API_KEY from this Secret)
 # finds it on first reconcile.  Reflector annotations ensure the Secret is
-# automatically mirrored to every agent-* namespace once Reflector is up (DD-89).
+# automatically mirrored to every agent-* namespace once Reflector is up.
 
-_anthropic-secret: ## Materialize anthropic-api-key Secret from SOPS-encrypted source (DD-83)
+_anthropic-secret: ## Materialize anthropic-api-key Secret from SOPS-encrypted source
 	@[ -f $(SECRETS_DIR)/anthropic.enc.yaml ] || (echo "ERROR: $(SECRETS_DIR)/anthropic.enc.yaml not found" && exit 1)
 	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
 		|| (echo "ERROR: SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
@@ -614,7 +615,7 @@ _anthropic-secret: ## Materialize anthropic-api-key Secret from SOPS-encrypted s
 		--overwrite
 	@echo "  ✓ anthropic-api-key Secret applied in kagent-system (Reflector annotations set for agent-* namespaces)"
 
-# ── External access (DD-23, DD-26) ─────────────────────────────────────────────
+# ── External access ────────────────────────────────────────────────────────────
 # Used during the regular bring-up (Stage 7 in docs/OPERATIONS.md) immediately
 # after `make tf-apply` to pin the new VM IP into platform Ingress hosts.
 # A separate `kubectl create configmap platform-config ...` step (also in
@@ -663,11 +664,11 @@ lint: ## Run all linters (Python ruff/mypy + TS tsc + Helm lint + Terraform vali
 	terraform -chdir=$(TERRAFORM_DIR) validate
 
 # ── Smoke tests ────────────────────────────────────────────────────────────────
-# DD-87: smoke-test runs on the VM (IN_CLUSTER=1) so it can reach the kind
-# cluster's kubectl API and port-forward to in-cluster services.  Running locally
-# fails because the operator's machine has no kube-context pointing at the VM's
-# kind cluster.  The script is SCP-ed to /tmp then executed via SSH — no
-# permanent install needed on the VM.
+# smoke-test runs on the VM (IN_CLUSTER=1) so it can reach the kind cluster's
+# kubectl API and port-forward to in-cluster services. Running locally fails
+# because the operator's machine has no kube-context pointing at the VM's kind
+# cluster. The script is SCP-ed to /tmp then executed via SSH — no permanent
+# install needed on the VM.
 
 smoke-test: ## Assert platform up, agents reachable, ArgoCD healthy (runs on VM via SSH)
 	@echo "→ Copying smoke-test script to whisperops-vm"

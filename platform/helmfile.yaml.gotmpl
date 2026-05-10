@@ -54,13 +54,12 @@ releases:
     values:
       - /tmp/whisperops/platform/observability/otel-collector-values.yaml
 
-  # DD-73 option-C (2026-05-08): kagent chart v0.4.3 bundles CRDs in
-  # templates/ alongside CRs, causing a CRD/CR ordering race on first install.
-  # A separate kagent-crds chart exists at the same version and contains all
-  # five CRDs (agents, memories, modelconfigs, teams, toolservers). Install it
-  # first; the main kagent release lists it in `needs:` so helmfile guarantees
-  # ordering. The `--server-side` equivalent is handled by helm install itself;
-  # `wait: true` on the CRD release ensures Established condition before kagent.
+  # The kagent chart bundles CRDs in templates/ alongside CRs, causing a
+  # CRD/CR ordering race on first install. A separate kagent-crds chart at
+  # the same version contains all five CRDs (agents, memories, modelconfigs,
+  # teams, toolservers). Install it first; the main kagent release lists it
+  # in `needs:` so helmfile guarantees ordering. `wait: true` on the CRD
+  # release ensures Established condition before kagent.
   - name: kagent-crds
     namespace: kagent-system
     createNamespace: true
@@ -88,29 +87,29 @@ releases:
             # helm install attempts to create the resource or the install fails with
             # "namespaces kagent not found". kubectl apply is idempotent on re-deploy.
             sudo kubectl create namespace kagent --dry-run=client -o yaml | sudo kubectl apply -f -
-    # DD-20: declarative ANTHROPIC_API_KEY env var on `app` container.
     # The Secret `anthropic-api-key` (key `api-key`) must exist in the
-    # kagent-system namespace BEFORE this release reconciles — bootstrap
+    # kagent-system namespace BEFORE this release reconciles, since the
+    # `app` container references ANTHROPIC_API_KEY declaratively — bootstrap
     # populates it from SOPS-decrypted secrets/anthropic.enc.yaml.
-    # DD-64: wait for install to fully complete before helmfile exits. Without
-    # this, helmfile may cache "deployed" even when the OCI pull failed or the
-    # install rolled back silently. timeout matches the kagent nginx timeout.
+    # `wait: true` ensures helmfile blocks until the install fully completes.
+    # Without it, helmfile may cache "deployed" even when the OCI pull failed
+    # or the install rolled back silently. Timeout matches the kagent nginx
+    # upstream timeout.
     wait: true
     timeout: 600
     values:
       - /tmp/whisperops/platform/values/kagent-values.yaml
-    # DD-72 (2026-05-08): kagent-postrender.sh disabled. Two latent bugs:
-    # (1) heredoc-stdin clobbered helm's piped manifest -> empty output (fixed
-    # in commits 6f22f17/a17edd0); (2) the DD-31+DD-47 regex injection then
-    # produces invalid YAML at ~line 126 (helmfile sync error: "did not find
-    # expected key"). Until the regex is rewritten with proper YAML parsing,
-    # disabled so kagent installs cleanly. Loss: AUTOGEN_DISABLE_RUNTIME_TRACING
-    # has TWO env entries (kubelet last-wins, DD-31 narrative); DD-47 nginx
-    # 600s timeout reverts to 60s default.
+    # postRenderer is disabled. The current regex-based injection in
+    # kagent-postrender.sh produces invalid YAML on render (helmfile sync
+    # fails with "did not find expected key"). Re-enable only after rewriting
+    # the script with a proper YAML parser (ruamel.yaml or kustomize).
+    # Trade-off while disabled: AUTOGEN_DISABLE_RUNTIME_TRACING has TWO env
+    # entries (kubelet last-wins so behaviour is correct), and the kagent
+    # nginx upstream timeout reverts to the chart default of 60s.
     # postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh
 
-  # DD-75: Reflector mirrors ar-pull-secret (crossplane-system) to all
-  # agent-* namespaces automatically. Must be up before the first agent scaffold.
+  # Reflector mirrors ar-pull-secret (crossplane-system) to all agent-*
+  # namespaces automatically. Must be up before the first agent scaffold.
   - name: reflector
     namespace: reflector-system
     createNamespace: true

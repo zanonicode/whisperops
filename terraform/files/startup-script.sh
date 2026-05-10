@@ -26,12 +26,11 @@ log "Starting whisperops bootstrap"
 # 1. System packages
 log "Installing system packages"
 apt-get update -qq
-# DD-98: Ubuntu mirror flakes — specific .deb downloads can stall mid-stream
-# (TCP ESTABLISHED but zero bytes flowing) for 15+ minutes. apt's built-in
-# retry doesn't catch stalled connections, only failed connects. Wrap in a
-# bounded retry loop that refreshes metadata and retries up to 3 times.
-# Past incident: 2026-05-08 v1.33 acceptance attempt #2, containerd .deb
-# stuck mid-download for 17+ minutes, cloud-init never advanced past this line.
+# Ubuntu mirror flakes can stall .deb downloads mid-stream (TCP ESTABLISHED but
+# zero bytes flowing) for 15+ minutes. apt's built-in retry catches failed
+# connects but not stalled connections. Wrap in a bounded retry loop that
+# refreshes metadata and retries up to 3 times so cloud-init never hangs
+# indefinitely on a single broken mirror.
 for attempt in 1 2 3; do
     if apt-get install -y docker.io git curl jq make; then
         log "apt-get install succeeded on attempt $attempt"
@@ -58,21 +57,18 @@ install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 rm /tmp/kubectl
 
 # 3a.1. helm + helmfile + sops (needed by _vm-bootstrap Makefile target)
-# Past incident (2026-05-07 deploy retry): _vm-bootstrap calls helmfile + sops
-# but neither was installed on the VM. Each manual install was a separate
-# intervention. Bake them into the startup-script.
+# _vm-bootstrap calls helmfile + sops; bake them into the startup-script so the
+# operator never has to install them by hand.
 log "Installing helm"
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 log "Installing helmfile"
-# Past incident (2026-05-07 deploy retry): the previous form here did
+# Pin the version: resolving the latest tag via
 #   `curl api.github.com/.../releases/latest | grep -m1 tag_name | sed ...`
-# `grep -m1` exits as soon as it sees the first match, closing the pipe while
-# curl is still writing the rest of the JSON. With `set -o pipefail`, the
-# pipeline inherits curl's SIGPIPE exit (23), and `set -e` aborts the script.
-# Whether the race fires depends on network latency vs grep scheduling — it
-# passed earlier today and failed on the next redeploy with no code change.
-# Pin the version instead: faster (no API call), reproducible, and no race.
+# races with `set -o pipefail` — `grep -m1` closes the pipe while curl is
+# still writing, the pipeline inherits curl's SIGPIPE exit (23), and `set -e`
+# aborts the whole script. Pinning is faster (no API call), reproducible, and
+# avoids the race entirely.
 HELMFILE_VERSION="1.5.0"
 curl -fsSL "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C /usr/local/bin helmfile
@@ -86,25 +82,23 @@ curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/s
 chmod +x /usr/local/bin/sops
 
 log "Installing yq"
-# Required by DD-31 kagent-postrender.sh (helmfile postRenderer that strips a
-# duplicated AUTOGEN_DISABLE_RUNTIME_TRACING env entry). Without yq on PATH, the
+# Required by the kagent helmfile postRenderer that strips a duplicated
+# AUTOGEN_DISABLE_RUNTIME_TRACING env entry. Without yq on PATH, the
 # postRenderer fails silently during `helmfile apply`, helmfile records kagent
 # as "deployed" in its state but the actual helm install never runs — cluster
-# ends up with zero kagent pods, zero kagent.dev CRDs (memory observation:
-# DD-64 fix-B `wait: true` does not catch this because the postRenderer
-# returns 0 even when yq is missing). Pin matches the same version style as
-# helmfile/sops above.
+# ends up with zero kagent pods, zero kagent.dev CRDs. Helmfile `wait: true`
+# does NOT catch this because the postRenderer returns 0 even when yq is
+# missing.
 YQ_VERSION="4.45.1"
 curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
     -o /usr/local/bin/yq
 chmod +x /usr/local/bin/yq
 
 log "Installing helm-diff plugin to /usr/local/share/helm/plugins (system-wide, required by helmfile)"
-# IMPORTANT: install to system-wide location, not $HOME/.local/share/helm/plugins.
-# Past incident (2026-05-07 deploy retry): plugin installed under /root was 700,
-# helmfile invoked by the SSH OS-Login user (e.g. vzanoni_psn_gmail_com) couldn't
-# discover it. Makefile sets HELM_PLUGINS=/usr/local/share/helm/plugins to point
-# helm at this location.
+# Install to the system-wide location, not $HOME/.local/share/helm/plugins:
+# a plugin under /root is mode 700 and unreadable by the SSH OS-Login user
+# helmfile actually runs as. The Makefile sets
+# HELM_PLUGINS=/usr/local/share/helm/plugins to point helm at this location.
 mkdir -p /usr/local/share/helm/plugins
 HELM_DATA_HOME=/usr/local/share/helm helm plugin install https://github.com/databus23/helm-diff 2>&1 || \
     log "  helm-diff plugin already installed or failed (non-fatal)"
@@ -145,10 +139,10 @@ chown ubuntu:ubuntu /home/ubuntu/.kube/config
 chmod 600 /home/ubuntu/.kube/config
 
 # Make /root/.kube/config readable by the OS-Login SSH user (different per operator).
-# Past incident (2026-05-07): SSH user `vzanoni_psn_gmail_com` could not read
-# /root/.kube/config (mode 600) when invoking helmfile via _vm-bootstrap. Demo
-# cluster — broadening kubeconfig perms is acceptable. For prod, switch to a
-# system-location kubeconfig at /etc/whisperops/kubeconfig.
+# /root/.kube/config defaults to mode 600 and is unreadable by the SSH user
+# invoking helmfile via _vm-bootstrap. Demo cluster — broadening kubeconfig
+# perms is acceptable. For prod, switch to a system-location kubeconfig at
+# /etc/whisperops/kubeconfig.
 chmod 755 /root /root/.kube
 chmod 644 /root/.kube/config
 

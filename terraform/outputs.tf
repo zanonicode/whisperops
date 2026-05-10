@@ -1,5 +1,5 @@
 output "vm_external_ip" {
-  description = "External NAT IP currently assigned to whisperops-vm by GCP. May differ from google_compute_address.static_ip.address if GCP assigned ephemeral NAT — see DD-39."
+  description = "External NAT IP currently assigned to whisperops-vm by GCP. May differ from google_compute_address.static_ip.address if GCP assigned ephemeral NAT (compute_instance silently ignores static_ips when the instance template already defines the NIC)."
   value       = data.google_compute_instance.vm.network_interface[0].access_config[0].nat_ip
 }
 
@@ -19,6 +19,6 @@ output "kubeconfig_path" {
 }
 
 output "registry_url" {
-  description = "Base URL for the whisperops-images Artifact Registry repository (DD-14)."
+  description = "Base URL for the whisperops-images Artifact Registry repository."
   value       = module.artifact_registry.registry_url
 }

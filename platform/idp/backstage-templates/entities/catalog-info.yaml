@@ -22,7 +22,7 @@ apiVersion: backstage.io/v1alpha1
 kind: Location
 metadata:
   name: whisperops-templates
-  description: Whisperops dataset-analyst agent templates (DD-40)
+  description: Whisperops dataset-analyst agent templates
 spec:
   targets:
     - ./dataset-whisperer/template.yaml

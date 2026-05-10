@@ -37,9 +37,11 @@ spec:
       mcpServer:
         toolServer: sandbox
         toolNames:
-          # DD-104: per-agent namespaced tool name (set in mcp_server.py).
-          # Hyphens replaced with underscores since some MCP/kagent paths
-          # reject hyphens in tool names.
+          # Per-agent namespaced tool name (set in mcp_server.py): kagent
+          # enforces a UNIQUE constraint on tool.name globally, so the 2nd+
+          # agent's sandbox would otherwise be rejected. Hyphens replaced
+          # with underscores since some MCP/kagent paths reject hyphens in
+          # tool names.
           - execute_python_${{ values.agent_name | replace("-", "_") }}
   a2aConfig:
     skills:

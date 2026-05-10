@@ -1,8 +1,7 @@
 replicaCount: 1
 
 image:
-  # DD-14: GCP Artifact Registry. DD-28: budget-controller activated in v0.3.
-  # DD-66: tag updated from 0.1.0 to latest — build-images.sh pushes :latest + :<sha>.
+  # GCP Artifact Registry. build-images.sh pushes both :latest and :<sha>.
   repository: us-central1-docker.pkg.dev/whisperops/whisperops-images/budget-controller
   pullPolicy: Always
   tag: "latest"
@@ -18,7 +17,7 @@ langfuse:
   hostEnvVar: LANGFUSE_HOST
   host: "https://us.cloud.langfuse.com"
 
-# Reference the per-namespace AR pull Secret (DD-18).
+# Reference the per-namespace AR pull Secret (mirrored in by Reflector).
 imagePullSecrets:
   - name: ar-pull-secret
 

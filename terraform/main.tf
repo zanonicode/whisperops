@@ -67,7 +67,7 @@ module "network" {
     },
     {
       name          = "allow-kind-ingress"
-      description   = "Allow inbound traffic to NGINX-Ingress on port 8443 (DD-23). Required for sslip.io external access."
+      description   = "Allow inbound traffic to NGINX-Ingress on port 8443. Required for sslip.io external access."
       source_ranges = ["0.0.0.0/0"]
       target_tags   = ["whisperops-vm"]
       allow = [
@@ -98,15 +98,14 @@ module "bootstrap_sa" {
   project_id    = var.project_id
   names         = ["whisperops-bootstrap"]
   display_name  = "WhisperOps Bootstrap SA"
-  description   = "Bootstrap SA used by the whisperops VM. Per DD-19, no IAM Conditions on *.create paths (CEL evaluates resource.name as empty at create time, causing 403 on every Crossplane SA/Key/IAMMember create)."
+  description   = "Bootstrap SA used by the whisperops VM. No IAM Conditions on *.create paths: CEL evaluates resource.name as empty at create time, causing 403 on every Crossplane SA/Key/IAMMember create."
   project_roles = []
 }
 
-# DD-19: Bootstrap SA roles are granted unconditionally. CEL Conditions on
+# Bootstrap SA roles are granted unconditionally. CEL Conditions on
 # resource.name only meaningfully filter get/update/delete; they evaluate to
 # false on every *.create call (resource.name is empty at create time),
-# breaking Crossplane reconciliation. Residual blast-radius risk is accepted
-# and documented in DESIGN §13.
+# breaking Crossplane reconciliation. Residual blast-radius risk is accepted.
 
 resource "google_project_iam_member" "bootstrap_storage_admin" {
   project = var.project_id
@@ -126,10 +125,10 @@ resource "google_project_iam_member" "bootstrap_sa_key_admin" {
   member  = "serviceAccount:${module.bootstrap_sa.email}"
 }
 
-# DD-19: roles/resourcemanager.projectIamAdmin is required for the bootstrap
-# SA to write google_project_iam_member resources via Crossplane (the GCP IAM
+# roles/resourcemanager.projectIamAdmin is required for the bootstrap SA to
+# write google_project_iam_member resources via Crossplane: the GCP IAM
 # provider issues ProjectIAMMember writes that need this role explicitly,
-# distinct from serviceAccountAdmin which only manages the SA objects).
+# distinct from serviceAccountAdmin which only manages the SA objects.
 resource "google_project_iam_member" "bootstrap_project_iam_admin" {
   project = var.project_id
   role    = "roles/resourcemanager.projectIamAdmin"
@@ -137,7 +136,7 @@ resource "google_project_iam_member" "bootstrap_project_iam_admin" {
 }
 
 ###############################################################################
-# Artifact Registry: whisperops-images repository (DD-14)
+# Artifact Registry: whisperops-images repository
 ###############################################################################
 
 module "artifact_registry" {
@@ -177,7 +176,7 @@ module "datasets_bucket" {
   name       = "${var.project_id}-datasets"
   location   = var.region
   # Demo/learning environment: terraform destroy is the canonical teardown path
-  # and is gated by an interactive confirmation in `make destroy` (DD-32).
+  # and is gated by an interactive confirmation in `make destroy`.
   # Set to false if this stack is ever promoted to a production-leaning context.
   force_destroy            = true
   versioning               = true
@@ -249,7 +248,7 @@ module "vm" {
   static_ips = [google_compute_address.static_ip.address]
 }
 
-# DD-39: Query the live VM to get its actual NAT IP. The instance_template
+# Query the live VM to get its actual NAT IP. The instance_template
 # access_config sets nat_ip = static_ip.address, but compute_instance silently
 # ignores static_ips when the template already defines the NIC. The data source
 # reflects whatever IP GCP has actually assigned.

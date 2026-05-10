@@ -14,7 +14,7 @@ This Backstage template provisions a fully governed **Dataset Whisperer** agent 
 
 ## Scaffolded Repo Layout
 
-Each scaffolded agent repo has a two-level layout (DD-53):
+Each scaffolded agent repo has a two-level layout:
 
 ```
 agent-{name}/
@@ -47,7 +47,7 @@ OutOfSync error for every new scaffold).
 |-------|----------|-------------|
 | `agent_name` | Yes | Slug, `^[a-z][a-z0-9-]{2,28}[a-z0-9]$` |
 | `description` | Yes | Free-text description (max 200 chars) |
-| `base_domain` | Yes | Full sslip.io domain, e.g. `136.115.224.138.sslip.io`. Run `kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}` to get the current value (DD-50). |
+| `base_domain` | Yes | Full sslip.io domain, e.g. `136.115.224.138.sslip.io`. Run `kubectl get cm platform-config -n whisperops-system -o jsonpath={.data.base_domain}` to get the current value. |
 | `dataset_id` | Yes | One of: `california-housing`, `online-retail-ii`, `spotify-tracks` |
 | `primary_model` | Yes | `claude-haiku-4-5-20251001` or `claude-sonnet-4-5-20251001` |
 | `budget_usd` | No | Max spend in USD (default `5.00`, format: `\d+\.\d{2}`) |
