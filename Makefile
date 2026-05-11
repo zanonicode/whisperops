@@ -4,7 +4,7 @@
         platform-bootstrap regenerate-profiles \
         langfuse-secret _anthropic-secret \
         external-ingresses \
-        empty-buckets drain-crossplane \
+        drain-crossplane \
         upload-datasets decrypt-secrets \
         lint \
         copy-repo gcp-bootstrap-key build-images deploy-vm _vm-bootstrap \
@@ -306,25 +306,25 @@ _push-whisperops-to-gitea: ## Create whisperops Gitea org+repo, push repo, apply
 	@bash /tmp/whisperops/scripts/push-whisperops-to-gitea.sh
 
 # ── Teardown ───────────────────────────────────────────────────────────────────
-# Order matters: Crossplane Managed Resources must be drained BEFORE Terraform
-# tears down the bootstrap SA / VPC, otherwise GCP resources (per-agent buckets,
-# SAs, IAM bindings created by Backstage-scaffolded agents) become orphaned —
-# they live outside both tfstate and any remaining controller's reach.
-# Buckets must also be emptied BEFORE drain, because GCS rejects DELETE on
-# non-empty buckets and Crossplane finalizers will then hang.
+# Order matters: ArgoCD Applications must be deleted BEFORE Crossplane drain
+# (otherwise selfHeal recreates the MRs faster than the drain poll loop can
+# observe them gone), and Crossplane MRs must be drained BEFORE Terraform
+# tears down the bootstrap SA / VPC (otherwise per-agent GCS buckets, SAs and
+# IAM bindings become orphaned — they live outside both tfstate and any
+# remaining controller's reach).
 #
-# The Terraform-managed datasets bucket sets force_destroy=true (demo-only;
-# guarded by the confirmation prompt below). Per-agent artifact buckets created
-# by Crossplane are emptied here as defense-in-depth — Crossplane Bucket CRs
-# scaffolded by Backstage may not all set the equivalent forceDestroy flag, and
-# even with it set, an empty-first pass avoids long deletionTimestamp waits.
+# Bucket emptying is no longer a separate step: per-agent Crossplane Bucket CRs
+# carry forceDestroy: true (set in the agent skeleton), so the provider deletes
+# bucket contents + the bucket itself in one atomic GCP call when the CR is
+# deleted. The Terraform-managed datasets bucket sets force_destroy=true in
+# `terraform/main.tf:181`, so terraform destroy handles it the same way. The
+# old `empty-buckets` target was a pre-empty pass that became redundant.
 #
 # Skip flags for partial teardowns:
-#   SKIP_CROSSPLANE=1   skip drain step (use when cluster is already gone)
-#   SKIP_BUCKETS=1      skip Crossplane-bucket empty step
+#   SKIP_CROSSPLANE=1   skip _stop-argocd-apps + drain (use when cluster is gone)
 #   FORCE=1             skip the interactive confirmation prompt
 
-destroy: ## Tear down EVERYTHING: empty buckets → drain Crossplane → terraform destroy
+destroy: ## Tear down EVERYTHING: stop ArgoCD apps → drain Crossplane → terraform destroy
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set and not derivable from terraform.tfvars" && exit 1)
 	@if [ "$(FORCE)" != "1" ]; then \
 		echo "⚠  This will permanently delete:"; \
@@ -335,7 +335,6 @@ destroy: ## Tear down EVERYTHING: empty buckets → drain Crossplane → terrafo
 		read CONFIRM; \
 		[ "$$CONFIRM" = "$(PROJECT_ID)" ] || (echo "Aborted." && exit 1); \
 	fi
-	@if [ "$(SKIP_BUCKETS)" != "1" ]; then $(MAKE) empty-buckets PROJECT_ID=$(PROJECT_ID); else echo "↳ Skipping bucket empty (SKIP_BUCKETS=1)"; fi
 	@if [ "$(SKIP_CROSSPLANE)" != "1" ]; then $(MAKE) _stop-argocd-apps; $(MAKE) drain-crossplane; else echo "↳ Skipping Crossplane drain (SKIP_CROSSPLANE=1)"; fi
 	$(MAKE) _drop-argo-workflows-crds
 	$(MAKE) _clean-orphan-firewalls PROJECT_ID=$(PROJECT_ID)
@@ -474,10 +473,10 @@ _clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLA
 	@echo "→ Deleting orphan agent-* GCS buckets in $(PROJECT_ID)"
 	@# When make destroy SKIP_CROSSPLANE=1 FORCE=1 is used (recovery path for
 	@# stuck Crossplane finalizers), Crossplane is not drained and its GCS
-	@# Bucket CRs are never finalized. The buckets remain in GCP after VM teardown.
-	@# empty-buckets catches these too, but only empties them — it does not delete
-	@# the bucket itself (deletion is left to Crossplane or terraform). With
-	@# Crossplane gone, this target is the only cleanup path. No-op if no agent-*
+	@# Bucket CRs are never finalized — so neither the `forceDestroy: true`
+	@# path nor terraform destroy reaches per-agent buckets. With Crossplane
+	@# gone, this target is the only cleanup path. `gcloud storage rm -r` deletes
+	@# all object versions and the bucket itself in one call. No-op if no agent-*
 	@# buckets exist (gcloud returns empty; the while loop body never runs).
 	@gcloud storage buckets list --project=$(PROJECT_ID) --format='value(name)' \
 		--filter='name:agent-*' 2>/dev/null \
@@ -486,40 +485,6 @@ _clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLA
 			gcloud storage rm -r "gs://$$bucket" --project=$(PROJECT_ID) 2>/dev/null || true; \
 		done
 	@echo "  ✓ Orphan agent-* bucket pass complete"
-
-empty-buckets: ## Empty Crossplane-owned + TF-managed datasets buckets (defensive — destroy path)
-	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
-	@echo "→ Emptying buckets in $(PROJECT_ID) (Crossplane-labeled + agent-* prefix + datasets)"
-	@# The TF-managed `whisperops-datasets` bucket can block terraform destroy if
-	@# tfstate ever drifts to force_destroy=false (e.g. state predates a main.tf
-	@# change). Emptying defensively here makes destroy idempotent regardless of
-	@# state drift. Also catch agent-* Crossplane buckets by name prefix as
-	@# fallback when the `managed_by=crossplane` label is missing or listing is
-	@# permissions-blocked.
-	@BUCKETS=$$( \
-		( gcloud storage buckets list --project=$(PROJECT_ID) --format="value(name)" \
-			--filter="labels.managed_by=crossplane" 2>/dev/null; \
-		  gcloud storage buckets list --project=$(PROJECT_ID) --format="value(name)" \
-			--filter="name:agent-*" 2>/dev/null; \
-		  echo "$(PROJECT_ID)-datasets" \
-		) | sort -u \
-	); \
-	if [ -z "$$BUCKETS" ]; then \
-		echo "  ↳ No buckets matched cleanup criteria"; \
-		exit 0; \
-	fi; \
-	for b in $$BUCKETS; do \
-		if gcloud storage buckets describe "gs://$$b" --project=$(PROJECT_ID) >/dev/null 2>&1; then \
-			echo "  ↳ Emptying gs://$$b (contents only; terraform destroy or Crossplane finalizer deletes the bucket itself)"; \
-			OBJS=$$(gcloud storage ls "gs://$$b/**" --project=$(PROJECT_ID) 2>/dev/null | head -1); \
-			if [ -n "$$OBJS" ]; then \
-				gcloud storage rm --recursive "gs://$$b/**" --project=$(PROJECT_ID) --quiet 2>&1 | tail -1 || true; \
-			else \
-				echo "    (already empty)"; \
-			fi; \
-		fi; \
-	done
-	@echo "  ✓ Bucket empty pass complete"
 
 # ── Platform bootstrap ─────────────────────────────────────────────────────────
 
