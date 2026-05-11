@@ -71,9 +71,14 @@ export async function POST(req: NextRequest): Promise<Response> {
   span.setAttribute('agent.id', AGENT_NAMESPACE);
   span.setAttribute('agent.ref', AGENT_REF);
 
-  const reqBody = (await req.json()) as { message?: string };
+  const reqBody = (await req.json()) as {
+    message?: string;
+    history?: { role: 'user' | 'assistant'; content: string }[];
+  };
   const message = (reqBody.message ?? '').trim();
+  const history = reqBody.history ?? [];
   span.setAttribute('message.length', message.length);
+  span.setAttribute('history.turns', history.length);
   if (!message) {
     span.setStatus({ code: SpanStatusCode.ERROR, message: 'empty message' });
     span.end();
@@ -82,6 +87,14 @@ export async function POST(req: NextRequest): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
+
+  // Prepend conversation history to the task so the planner has multi-turn context.
+  const task =
+    history.length === 0
+      ? message
+      : `Previous conversation:\n${history
+          .map((m) => `${m.role}: ${m.content}`)
+          .join('\n')}\n\nCurrent question: ${message}`;
 
   const cookieHeader = req.headers.get('cookie') ?? '';
   const cookieMatch = cookieHeader.match(/kagent-session-id=([a-f0-9-]+)/);
@@ -101,7 +114,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   try {
     teamConfig = await fetchTeamConfig();
-    upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, message, teamConfig);
+    upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, task, teamConfig);
   } catch (err) {
     if (isSessionNotFound(err)) {
       span.addEvent('session_recovered_after_404');
@@ -109,7 +122,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       setCookie = sessionCookieValue(sessionId);
       recovered = true;
       // Let any second failure propagate as a non-recoverable error.
-      upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, message, teamConfig!);
+      upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, task, teamConfig!);
     } else {
       const msg = err instanceof Error ? err.message : 'invoke failed';
       span.setAttribute('session.recovered', false);

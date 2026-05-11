@@ -43,6 +43,10 @@ export default function ChatPageClient({ agentNamespace, agentName }: ChatPageCl
       status: 'ok',
     };
 
+    const history = messages
+      .filter((m) => m.status === 'ok' && m.content.trim().length > 0)
+      .map(({ role, content }) => ({ role, content }));
+
     setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setIsStreaming(true);
@@ -55,7 +59,7 @@ export default function ChatPageClient({ agentNamespace, agentName }: ChatPageCl
 
     const { abort } = createSSEConnection({
       url: '/api/chat',
-      body: { message: userMessage.content },
+      body: { message: userMessage.content, history },
       onChunk: (chunk) => {
         setMessages((prev) =>
           prev.map((m) =>
