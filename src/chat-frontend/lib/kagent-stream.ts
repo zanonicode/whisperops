@@ -17,6 +17,14 @@
 // can inspect the HTTP status before building the Response, enabling session-lifecycle
 // recovery when kagent returns 404 "Session not found".
 
+import { Agent, fetch as undiciFetch } from 'undici';
+
+// Match the kagent ui nginx proxy_read_timeout (600s); undici defaults to 300s.
+const longRunningDispatcher = new Agent({
+  bodyTimeout: 600_000,
+  headersTimeout: 600_000,
+});
+
 interface KagentEvent {
   type?: string;
   source?: string;
@@ -49,16 +57,17 @@ export async function fetchInvokeResponse(
   teamConfig: unknown,
 ): Promise<Response> {
   const url = `${kagentBaseUrl}/api/sessions/${sessionId}/invoke/stream?user_id=${encodeURIComponent(userId)}`;
-  const upstream = await fetch(url, {
+  const upstream = await undiciFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
     body: JSON.stringify({ task, team_config: teamConfig }),
+    dispatcher: longRunningDispatcher,
   });
   if (!upstream.ok || !upstream.body) {
     const text = await upstream.text().catch(() => '');
     throw new KagentInvokeError(upstream.status, text);
   }
-  return upstream;
+  return upstream as unknown as Response;
 }
 
 export async function processInvokeStream(
