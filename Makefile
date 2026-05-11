@@ -242,8 +242,8 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	helmfile -f platform/helmfile.yaml.gotmpl apply --skip-diff-on-install; \
 	echo "→ Patching kagent ui container with nginx-timeout ConfigMap mount"; \
 	bash /tmp/whisperops/scripts/patch-kagent-ui-nginx.sh; \
-	echo "→ Removing kagent built-in ToolServers we do not use"; \
-	kubectl delete toolserver -n kagent mcp-grafana --ignore-not-found 2>&1 | sed 's/^/  /'; \
+	echo "→ Applying kagent-toolserver-secret in kagent namespace (chart ships ToolServer in kagent ns referencing a Secret in kagent-system)"; \
+	kubectl apply -f /tmp/whisperops/platform/values/kagent-mcp-grafana-secret.yaml | sed 's/^/  /'; \
 	# Keycloak scale-to-zero is intentionally disabled: Keycloak must stay active \
 	# to serve OIDC login via the SSH tunnel. Re-enable only when Backstage moves \
 	# to a guest-auth provider that does not require Keycloak. \
