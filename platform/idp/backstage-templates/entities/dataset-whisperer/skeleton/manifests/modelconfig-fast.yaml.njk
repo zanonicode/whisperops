@@ -1,16 +1,16 @@
 apiVersion: kagent.dev/v1alpha1
 kind: ModelConfig
 metadata:
-  name: model-primary
+  name: model-fast
   namespace: agent-${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   provider: Anthropic
-  # Sonnet 4.5: required for any Agent referencing tools (planner delegates
-  # to sub-agents as tools; analyst calls execute_python). model-fast (Haiku)
-  # is the alternative for tool-less agents like writer.
-  model: claude-sonnet-4-5-20250929
+  # Haiku 4.5 is not classified as function-call-capable by the autogen
+  # version kagent currently ships. Only reference this config from agents
+  # that have no `tools:` (e.g. writer); tool-using agents must use model-primary.
+  model: claude-haiku-4-5-20251001
   apiKeySecretRef: anthropic-api-key
   apiKeySecretKey: api-key
   anthropic:
