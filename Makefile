@@ -248,6 +248,11 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	# helmfile diffs all releases up-front in parallel; some CRDs may not exist \
 	# yet on a fresh cluster, so skip-diff-on-install avoids spurious failures. \
 	helmfile -f platform/helmfile.yaml.gotmpl apply --skip-diff-on-install; \
+	# Mount the kagent-nginx-timeout ConfigMap onto the kagent ui container \
+	# (overrides chart-baked nginx.conf to bump proxy_read_timeout from 60s to \
+	# 600s). Replaces the disabled kagent-postrender.sh — see PENDING.B8. \
+	echo "→ Patching kagent ui container with nginx-timeout ConfigMap mount"; \
+	bash /tmp/whisperops/scripts/patch-kagent-ui-nginx.sh; \
 	# Keycloak scale-to-zero is intentionally disabled: Keycloak must stay active \
 	# to serve OIDC login via the SSH tunnel. Re-enable only when Backstage moves \
 	# to a guest-auth provider that does not require Keycloak. \
