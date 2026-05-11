@@ -10,11 +10,7 @@ spec:
     location: ${{ values.region | default('US-CENTRAL1') }}
     publicAccessPrevention: enforced
     uniformBucketLevelAccess: true
-    # forceDestroy lets Crossplane delete the bucket + all objects (including
-    # versions, since versioning is enabled) in one atomic GCP API call when
-    # the Bucket CR is deleted during `make destroy`. Without it, drain-crossplane
-    # would need a pre-empty pass via gcloud (the old `empty-buckets` target),
-    # which races with anything writing to the bucket between empty + delete.
+    # forceDestroy: delete bucket + objects (incl. non-current versions) atomically.
     forceDestroy: true
     versioning:
       - enabled: true

@@ -116,16 +116,8 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		if [ "$$i" = "60" ]; then echo ""; echo "  ✗ SSH not ready after 5 min"; exit 1; fi; \
 		printf "."; sleep 5; \
 	done
-	@# macOS BSD tar INJECTS AppleDouble `._*` entries on-the-fly into the
-	@# archive stream from extended attributes — these never exist as files on
-	@# disk so `--exclude='._*'` cannot filter them. The injected entries land
-	@# on the Linux VM as real files, eventually causing things like
-	@# `kubectl apply -f` to choke with "control characters are not allowed"
-	@# and polluting `git add -A` snapshots pushed to Gitea (~975 ._* files
-	@# observed on a single deploy). The fix is the COPYFILE_DISABLE=1 env
-	@# var, which tells macOS bsdtar to skip xattr serialization entirely.
-	@# `--exclude='._*'` is kept as belt-and-suspenders for the case where
-	@# AppleDouble files do exist as real files on disk.
+	@# COPYFILE_DISABLE=1: macOS bsdtar otherwise injects xattr-derived `._*`
+	@# entries into the archive stream that `--exclude='._*'` cannot filter.
 	@COPYFILE_DISABLE=1 tar \
 		--exclude='.terraform' \
 		--exclude='.git' \
@@ -248,9 +240,6 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	# helmfile diffs all releases up-front in parallel; some CRDs may not exist \
 	# yet on a fresh cluster, so skip-diff-on-install avoids spurious failures. \
 	helmfile -f platform/helmfile.yaml.gotmpl apply --skip-diff-on-install; \
-	# Mount the kagent-nginx-timeout ConfigMap onto the kagent ui container \
-	# (overrides chart-baked nginx.conf to bump proxy_read_timeout from 60s to \
-	# 600s). Replaces the disabled kagent-postrender.sh — see PENDING.B8. \
 	echo "→ Patching kagent ui container with nginx-timeout ConfigMap mount"; \
 	bash /tmp/whisperops/scripts/patch-kagent-ui-nginx.sh; \
 	# Keycloak scale-to-zero is intentionally disabled: Keycloak must stay active \
@@ -311,21 +300,16 @@ _push-whisperops-to-gitea: ## Create whisperops Gitea org+repo, push repo, apply
 	@bash /tmp/whisperops/scripts/push-whisperops-to-gitea.sh
 
 # ── Teardown ───────────────────────────────────────────────────────────────────
-# Order matters: ArgoCD Applications must be deleted BEFORE Crossplane drain
-# (otherwise selfHeal recreates the MRs faster than the drain poll loop can
-# observe them gone), and Crossplane MRs must be drained BEFORE Terraform
-# tears down the bootstrap SA / VPC (otherwise per-agent GCS buckets, SAs and
-# IAM bindings become orphaned — they live outside both tfstate and any
-# remaining controller's reach).
+# Order: ArgoCD Applications → Crossplane MRs → Terraform. ArgoCD must go
+# first or selfHeal recreates the MRs faster than drain can delete them.
+# Crossplane must go before Terraform or per-agent GCS buckets / SAs / IAM
+# bindings become orphaned (live outside tfstate).
 #
-# Bucket emptying is no longer a separate step: per-agent Crossplane Bucket CRs
-# carry forceDestroy: true (set in the agent skeleton), so the provider deletes
-# bucket contents + the bucket itself in one atomic GCP call when the CR is
-# deleted. The Terraform-managed datasets bucket sets force_destroy=true in
-# `terraform/main.tf:181`, so terraform destroy handles it the same way. The
-# old `empty-buckets` target was a pre-empty pass that became redundant.
+# Bucket emptying is handled by `forceDestroy: true` on Crossplane Bucket CRs
+# and `force_destroy = true` on the Terraform datasets bucket, so no separate
+# empty pass is needed.
 #
-# Skip flags for partial teardowns:
+# Skip flags:
 #   SKIP_CROSSPLANE=1   skip _stop-argocd-apps + drain (use when cluster is gone)
 #   FORCE=1             skip the interactive confirmation prompt
 
@@ -348,17 +332,11 @@ destroy: ## Tear down EVERYTHING: stop ArgoCD apps → drain Crossplane → terr
 	$(MAKE) _clean-orphan-buckets PROJECT_ID=$(PROJECT_ID)
 	@echo "✓ Teardown complete."
 
-_stop-argocd-apps: ## Force-clear ArgoCD Application finalizers and delete all Applications (called before drain-crossplane to stop selfHeal recreating Crossplane MRs mid-drain)
+_stop-argocd-apps: ## Force-clear ArgoCD Application finalizers and delete all Applications (precedes drain-crossplane)
 	@echo "→ Stopping ArgoCD reconciliation (delete all Applications) via VM SSH"
-	@# ArgoCD's selfHeal=true on agent-* and crossplane-* Applications recreates
-	@# any Crossplane Managed Resource we delete in drain-crossplane within
-	@# 1-3 seconds. Without this step the finalizer wait loop times out forever:
-	@# every poll finds the resources alive (recreated faster than the 5s poll).
-	@# Sever ArgoCD's reconciliation BEFORE drain by deleting all Applications.
-	@#
-	@# Force-clear the resources-finalizer.argoproj.io finalizer first so app
-	@# deletions don't block on cascade-delete of resources we're about to
-	@# delete via drain-crossplane (deadlock).
+	@# Finalizer-clear before delete: the resources-finalizer.argoproj.io
+	@# cascade-deletes child resources, which deadlocks against the same MRs
+	@# drain-crossplane is about to delete.
 	@if ! gcloud compute instances describe whisperops-vm --zone=$(ZONE) >/dev/null 2>&1; then \
 		echo "  ↳ VM does not exist — skipping (cluster already destroyed)"; \
 		exit 0; \
@@ -476,13 +454,10 @@ _clean-orphan-iam-bindings: ## Remove project IAM bindings whose principals are 
 _clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLANE=1 bypasses Crossplane drain
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Deleting orphan agent-* GCS buckets in $(PROJECT_ID)"
-	@# When make destroy SKIP_CROSSPLANE=1 FORCE=1 is used (recovery path for
-	@# stuck Crossplane finalizers), Crossplane is not drained and its GCS
-	@# Bucket CRs are never finalized — so neither the `forceDestroy: true`
-	@# path nor terraform destroy reaches per-agent buckets. With Crossplane
-	@# gone, this target is the only cleanup path. `gcloud storage rm -r` deletes
-	@# all object versions and the bucket itself in one call. No-op if no agent-*
-	@# buckets exist (gcloud returns empty; the while loop body never runs).
+	@# Fallback when SKIP_CROSSPLANE=1 bypasses drain — neither the Crossplane
+	@# forceDestroy path nor terraform destroy reaches per-agent buckets, so
+	@# this is the only cleanup path. `gcloud storage rm -r` deletes objects
+	@# (including versions) and the bucket itself in one call.
 	@gcloud storage buckets list --project=$(PROJECT_ID) --format='value(name)' \
 		--filter='name:agent-*' 2>/dev/null \
 		| while read -r bucket; do \

@@ -1,24 +1,7 @@
 #!/usr/bin/env bash
-# Patch the kagent Deployment to mount the kagent-nginx-timeout ConfigMap
-# onto the `ui` container at /etc/nginx/nginx.conf.
-#
-# WHY:
-#   The kagent chart's `ui` container runs nginx with a baked-in nginx.conf
-#   whose /api/ location block inherits the nginx default proxy_read_timeout
-#   of 60s. Heavy agent queries (write Python → exec → chart → synthesise)
-#   accumulate >60s wall-time, causing the nginx layer to terminate the
-#   upstream connection with HTTP 504. The chart exposes no ui.nginx.* keys
-#   and no extraNginxConfig injection point.
-#
-# Replaces the disabled kagent-postrender.sh (regex approach was fragile and
-# produced invalid YAML on edge cases — see PENDING.B8). Runs INSIDE the VM
-# from `_vm-bootstrap` after helmfile-apply.
-#
-# Idempotent: if the volume + volumeMount are already present from a prior
-# run, the script no-ops without touching the Deployment.
-#
-# Container-index discovery is dynamic (`jq` finds 'ui' by name) so chart
-# version bumps that reorder containers don't break the patch.
+# Mount the kagent-nginx-timeout ConfigMap onto the kagent ui container at
+# /etc/nginx/nginx.conf. Idempotent: no-op if already mounted. Container
+# index is discovered dynamically via jq.
 
 set -euo pipefail
 
@@ -52,11 +35,8 @@ fi
 
 echo "  ↳ Patching ${DEPLOY} (ui container at index ${UI_IDX})"
 
-# Detect whether ui container's volumeMounts array already exists. JSON patch
-# `op: add` with `/-` requires the parent array to exist; if absent we must
-# create the whole array at once. The idempotency guard above means we only
-# ever reach this code when the volume hasn't been added yet, but volumeMounts
-# may or may not exist depending on whether the chart sets any defaults.
+# JSON patch `op: add` with `/-` requires the parent array to exist; if
+# the ui container has no volumeMounts at all, create the whole array.
 HAS_VM=$(kubectl get deploy "${DEPLOY}" -n "${NAMESPACE}" \
     -o jsonpath="{.spec.template.spec.containers[${UI_IDX}].volumeMounts}" 2>/dev/null || true)
 
@@ -72,13 +52,7 @@ else
     UI_VM_VALUE="{\"name\":\"${VOLUME_NAME}\",\"mountPath\":\"/etc/nginx/nginx.conf\",\"subPath\":\"nginx.conf\",\"readOnly\":true}"
 fi
 
-# RFC 6902 JSON patch. Two ops:
-#   1. Append the kagent-nginx-timeout volume to spec.template.spec.volumes
-#      (volumes array always exists — the chart populates `sqlite-volume`).
-#   2. Add or append the volumeMount to the ui container (depends on array
-#      existence detected above).
-# Strategic merge would be simpler but per CLAUDE.md Workflow Rule #6 it
-# can silently truncate sibling array entries — JSON patch is robust.
+# Strategic merge can silently truncate sibling array entries; use JSON patch.
 kubectl patch deploy "${DEPLOY}" -n "${NAMESPACE}" --type=json -p="[
   {\"op\":\"add\",\"path\":\"/spec/template/spec/volumes/-\",
    \"value\":{\"name\":\"${VOLUME_NAME}\",

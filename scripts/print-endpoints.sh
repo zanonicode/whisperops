@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
-# Print all whisperops platform endpoints + credentials.
-#
-# Runs on the operator machine. Fetches VM_IP via gcloud, then SSHes once
-# to the VM to pull all relevant K8s Secret values in a single round-trip.
-#
-# Invoked as the final step of `make deploy` and standalone via `make endpoints`
-# whenever the operator needs to recall credentials. Each VM IP changes per
-# deploy (no static reservation), so URLs must be re-fetched each cycle.
-#
-# Missing secrets render as "(not ready)" so partial-deploy states still print
-# something useful instead of dying with empty values.
+# Print all whisperops platform endpoints + credentials. Single SSH
+# round-trip to the VM. Missing secrets render as "(not ready)".
 
 set -euo pipefail
 
@@ -23,8 +14,7 @@ if [ -z "${VM_IP}" ]; then
     exit 1
 fi
 
-# Single SSH round-trip — avoids 5+ separate connection setups.
-# Output is one KEY=VALUE per line; empty values become "(not ready)" below.
+# Output one KEY=VALUE per line; empty values render as "(not ready)" below.
 CREDS=$(gcloud compute ssh whisperops-vm --zone="${ZONE}" \
     --ssh-flag="-o ServerAliveInterval=30" \
     --ssh-flag="-o ServerAliveCountMax=3" \
@@ -40,8 +30,7 @@ echo "KEYCLOAK_USER1=$(get_secret keycloak keycloak-config USER_PASSWORD)"
 echo "KEYCLOAK_ADMIN=$(get_secret keycloak keycloak-config KEYCLOAK_ADMIN_PASSWORD)"
 ' 2>/dev/null || true)
 
-# Parse "KEY=VALUE" pairs by splitting on the FIRST = only — passwords often
-# contain = and other special chars. Empty values render as "(not ready)".
+# Split on the FIRST = only — passwords often contain = and other specials.
 extract() {
     local key="$1"
     local val

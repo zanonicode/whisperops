@@ -1,17 +1,6 @@
 #!/usr/bin/env bash
 # Push the whisperops monorepo snapshot to in-cluster Gitea, then apply the
-# ArgoCD root-app (app-of-apps).
-#
-# Runs INSIDE the VM. Called by `make _push-whisperops-to-gitea` at the end of
-# `make _vm-bootstrap`. Idempotent — re-running on existing org/repo succeeds.
-#
-# Why a separate script instead of an inline Makefile recipe:
-#   The original recipe was a 60-line `bash -c '...'` with multiple `'\''`
-#   JSON-escape patterns. /bin/sh's quote-state tracking lost balance on
-#   line 53 (the `git remote add gitea-push "${PUSH_REMOTE}"` line) and
-#   exited with "Unterminated quoted string" — preventing the entire push
-#   on first true-clean deploys. Extracting eliminates the make → sh → bash
-#   quote-nesting interaction.
+# ArgoCD root-app. Runs INSIDE the VM. Idempotent on org/repo creation.
 
 set -euo pipefail
 
@@ -60,15 +49,13 @@ case "${HTTP_CODE}" in
 esac
 
 echo "  ↳ Pushing ${REPO_DIR} to gitea whisperops/whisperops"
-# URL-encode Gitea password via jq @uri: the admin password contains
-# URL-reserved characters; embedding it raw breaks git's URL parser.
+# URL-encode the password — git's URL parser breaks on raw special chars.
 GITEA_PASS_ENC=$(printf %s "${GITEA_PASS}" | jq -sRr @uri)
 PUSH_REMOTE="http://giteaAdmin:${GITEA_PASS_ENC}@${GITEA_HOST}:${GITEA_PORT}/whisperops/whisperops.git"
 
-# /tmp/whisperops has no .git/ (copy-repo excludes it). Create a fresh
-# snapshot repo here so we can push to Gitea. ArgoCD only needs HEAD content,
-# not history. This is destructive on /tmp/whisperops/.git but that dir is
-# transient (rebuilt every copy-repo run).
+# Snapshot the working tree as a single commit; ArgoCD only needs HEAD
+# content, not history. /tmp/whisperops/.git is transient (rebuilt every
+# copy-repo run) so wiping it is safe.
 rm -rf "${REPO_DIR}/.git"
 git -C "${REPO_DIR}" init -q -b main
 git -C "${REPO_DIR}" -c user.email=ci@whisperops.io -c user.name=whisperops-ci add -A

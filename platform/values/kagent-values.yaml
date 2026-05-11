@@ -58,17 +58,8 @@ otel:
         timeout: 15
         insecure: true
 
-# Disable all kagent built-in demo agents. We only use our scaffolded
-# dataset-whisperer agents (planner / analyst / writer in agent-* namespaces).
-# The built-in agents (k8s, helm, cilium, istio, etc.) ship preconfigured with
-# default-model-config, but their reconciliation races against ModelConfig
-# registration in kagent's internal SQLite DB — at least one agent
-# (observed: observability-agent) ends up with a broken model FK link, which
-# causes kagent's `GET /api/agents` LIST endpoint to bail with
-# "Agent not found: failed to get model: record not found". The chat-frontend's
-# createSession path internally hits LIST, so a broken built-in agent makes the
-# entire chat UI return HTTP 500 ("HTTP 500:" with empty body). Disabling the
-# built-in agents we don't use removes the race entirely.
+# Disable kagent built-in demo agents — we only use scaffolded
+# dataset-whisperer agents in agent-* namespaces.
 argo-rollouts-agent:
   enabled: false
 cilium-debug-agent:
