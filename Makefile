@@ -11,7 +11,7 @@
         _push-whisperops-to-gitea \
         _stop-argocd-apps \
         _drop-argo-workflows-crds \
-        _clean-orphan-iam-bindings _clean-orphan-firewalls _clean-orphan-buckets
+        _clean-orphan-iam-bindings _clean-orphan-firewalls _clean-orphan-buckets _clean-orphan-sas
 
 TERRAFORM_DIR := terraform
 TF_ENV_DIR    := terraform/envs/demo
@@ -330,6 +330,7 @@ destroy: ## Tear down EVERYTHING: stop ArgoCD apps → drain Crossplane → terr
 	terraform -chdir=$(TERRAFORM_DIR) destroy -var-file=envs/demo/terraform.tfvars -auto-approve
 	$(MAKE) _clean-orphan-iam-bindings PROJECT_ID=$(PROJECT_ID)
 	$(MAKE) _clean-orphan-buckets PROJECT_ID=$(PROJECT_ID)
+	$(MAKE) _clean-orphan-sas PROJECT_ID=$(PROJECT_ID)
 	@echo "✓ Teardown complete."
 
 _stop-argocd-apps: ## Force-clear ArgoCD Application finalizers and delete all Applications (precedes drain-crossplane)
@@ -389,12 +390,12 @@ drain-crossplane: ## Delete all Crossplane GCP Managed Resources on the VM-side 
 	fi; \
 	gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='\
 		set -e; \
-		CRDS=$$(sudo kubectl get crd -o name 2>/dev/null | grep -E "\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$" || true); \
-		if [ -z "$$CRDS" ]; then \
-			echo "  ↳ No Crossplane GCP CRDs found — nothing to drain"; \
+		MR_CRDS=$$(sudo kubectl get crd -o name 2>/dev/null | grep -E "\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$" | grep -vE "providerconfig" || true); \
+		if [ -z "$$MR_CRDS" ]; then \
+			echo "  ↳ No Crossplane GCP managed-resource CRDs found — nothing to drain"; \
 			exit 0; \
 		fi; \
-		for crd in $$CRDS; do \
+		for crd in $$MR_CRDS; do \
 			KIND=$$(echo $$crd | sed "s|customresourcedefinition.apiextensions.k8s.io/||"); \
 			COUNT=$$(sudo kubectl get $$KIND -A --no-headers 2>/dev/null | wc -l | tr -d " "); \
 			if [ "$$COUNT" -gt 0 ]; then \
@@ -405,7 +406,7 @@ drain-crossplane: ## Delete all Crossplane GCP Managed Resources on the VM-side 
 		echo "  ↳ Waiting up to 5 min for Crossplane finalizers to release GCP resources..."; \
 		for i in $$(seq 1 60); do \
 			REMAINING=0; \
-			for crd in $$(sudo kubectl get crd -o name 2>/dev/null | grep -E "\.(gcp\.upbound\.io|gcp\.crossplane\.io)$$"); do \
+			for crd in $$MR_CRDS; do \
 				KIND=$$(echo $$crd | sed "s|customresourcedefinition.apiextensions.k8s.io/||"); \
 				C=$$(sudo kubectl get $$KIND -A --no-headers 2>/dev/null | wc -l | tr -d " "); \
 				REMAINING=$$((REMAINING + C)); \
@@ -465,6 +466,17 @@ _clean-orphan-buckets: ## Delete agent-* GCS buckets orphaned when SKIP_CROSSPLA
 			gcloud storage rm -r "gs://$$bucket" --project=$(PROJECT_ID) 2>/dev/null || true; \
 		done
 	@echo "  ✓ Orphan agent-* bucket pass complete"
+
+_clean-orphan-sas: ## Delete agent-* GCP service accounts orphaned by failed Crossplane finalizers
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Deleting orphan agent-* service accounts in $(PROJECT_ID)"
+	@gcloud iam service-accounts list --project=$(PROJECT_ID) \
+		--format='value(email)' --filter='email:agent-*' 2>/dev/null \
+		| while read -r sa; do \
+			echo "  ↳ Deleting orphan SA: $$sa"; \
+			gcloud iam service-accounts delete "$$sa" --project=$(PROJECT_ID) --quiet 2>/dev/null || true; \
+		done
+	@echo "  ✓ Orphan agent-* SA pass complete"
 
 # ── Platform bootstrap ─────────────────────────────────────────────────────────
 
