@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help preflight deploy destroy smoke-test \
+.PHONY: help preflight deploy destroy smoke-test endpoints \
         tf-init tf-plan tf-apply \
         platform-bootstrap regenerate-profiles \
         langfuse-secret _anthropic-secret \
@@ -80,7 +80,7 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key build-images deploy-vm ## Full deploy: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → build-images → deploy-vm
+deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key build-images deploy-vm endpoints ## Full deploy: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → build-images → deploy-vm → endpoints
 	@# Rollup target — invokes the full chain. Each sub-target is independently
 	@# runnable for debugging (e.g. `make build-images` alone after a code change).
 	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
@@ -575,6 +575,9 @@ external-ingresses: ## Regenerate platform/external-access/ingresses.yaml for ne
 	 rm -f platform/external-access/ingresses.yaml.bak; \
 	 kubectl apply -f platform/external-access/ingresses.yaml
 	@echo "  ✓ Platform Ingresses regenerated and applied"
+
+endpoints: ## Print all platform endpoints + credentials (final step of deploy; run anytime to recall)
+	@bash scripts/print-endpoints.sh
 
 # ── Datasets ───────────────────────────────────────────────────────────────────
 
