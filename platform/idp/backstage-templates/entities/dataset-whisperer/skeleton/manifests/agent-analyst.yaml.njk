@@ -10,7 +10,7 @@ metadata:
     whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
   description: "Dataset Whisperer analyst — runs Python in the per-agent sandbox to answer numerical questions about ${{ values.dataset_id }}."
-  modelConfig: model-primary
+  modelConfig: model
   systemMessage: |
     You are the analyst for Dataset Whisperer agent "${{ values.agent_name }}".
     Dataset: "${{ values.dataset_id }}".

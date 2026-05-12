@@ -2,7 +2,7 @@
 .PHONY: help preflight deploy destroy smoke-test endpoints \
         tf-init tf-plan tf-apply \
         platform-bootstrap regenerate-profiles \
-        langfuse-secret _anthropic-secret \
+        langfuse-secret kagent-vertex-key \
         external-ingresses \
         drain-crossplane \
         upload-datasets decrypt-secrets \
@@ -71,7 +71,7 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 	@# The bootstrap SA key is generated fresh per deploy via `make gcp-bootstrap-key` \
 	@# rather than stored encrypted: tf-apply recreates the SA on every destroy+create \
 	@# cycle, which invalidates any previously-issued key. \
-	@for f in anthropic openai supabase langfuse; do \
+	@for f in openai supabase langfuse; do \
 		[ -f $(SECRETS_DIR)/$$f.enc.yaml ] && grep -q '^sops:' $(SECRETS_DIR)/$$f.enc.yaml \
 			|| (echo "  ✗ secrets/$$f.enc.yaml missing or unencrypted" && exit 1); \
 	done
@@ -80,7 +80,7 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key build-images deploy-vm endpoints ## Full deploy: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → build-images → deploy-vm → endpoints
+deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key kagent-vertex-key build-images deploy-vm endpoints ## Full deploy: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → kagent-vertex-key → build-images → deploy-vm → endpoints
 	@# Rollup target — invokes the full chain. Each sub-target is independently
 	@# runnable for debugging (e.g. `make build-images` alone after a code change).
 	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
@@ -178,6 +178,33 @@ gcp-bootstrap-key: ## Generate fresh whisperops-bootstrap SA key + apply as Secr
 		rm -f /tmp/gcp-bootstrap-key.json'
 	@echo "  ✓ gcp-bootstrap-sa-key Secret applied in crossplane-system"
 
+kagent-vertex-key: ## Generate fresh whisperops-kagent-vertex SA key + apply as Secret in kagent-system
+	@# Mirrors gcp-bootstrap-key pattern (CLAUDE.md gotcha #10): ephemeral per
+	@# deploy, never SOPS-encrypted. The gcp-bootstrap-key target already polled
+	@# cloud-init readiness, so no wait loop needed here.
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Materializing whisperops-kagent-vertex SA key as kagent-vertex-credentials Secret"
+	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
+	 gcloud iam service-accounts keys create $$TMPF \
+		--iam-account=whisperops-kagent-vertex@$(PROJECT_ID).iam.gserviceaccount.com \
+		--project=$(PROJECT_ID) 2>&1 | tail -1; \
+	 gcloud compute scp $$TMPF whisperops-vm:/tmp/kagent-vertex-key.json --zone=$(ZONE) >/dev/null; \
+	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=' \
+		set -e; \
+		sudo /usr/local/bin/kubectl get namespace kagent-system >/dev/null 2>&1 \
+			|| sudo /usr/local/bin/kubectl create namespace kagent-system; \
+		sudo /usr/local/bin/kubectl create secret generic kagent-vertex-credentials -n kagent-system \
+			--from-file=credentials.json=/tmp/kagent-vertex-key.json \
+			--dry-run=client -o yaml \
+			| sudo /usr/local/bin/kubectl annotate -f - --local -o yaml \
+				reflector.v1.k8s.emberstack.com/reflection-allowed=true \
+				reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces="agent-.*" \
+				reflector.v1.k8s.emberstack.com/reflection-auto-enabled=true \
+				reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="agent-.*" \
+			| sudo /usr/local/bin/kubectl apply -f -; \
+		rm -f /tmp/kagent-vertex-key.json'
+	@echo "  ✓ kagent-vertex-credentials Secret applied in kagent-system (Reflector → agent-*)"
+
 build-images: ## Build whisperops container images on the VM and push to Artifact Registry
 	@echo "→ Building whisperops images on whisperops-vm"
 	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
@@ -234,8 +261,6 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	echo "  PROJECT_ID=$$PROJECT_ID_DERIVED"; \
 	echo "→ Rewriting Backstage host references"; \
 	bash platform/scripts/rewrite-backstage-hosts.sh "$$DERIVED_IP"; \
-	echo "→ Materializing anthropic-api-key Secret in kagent-system"; \
-	$(MAKE) _anthropic-secret; \
 	echo "→ Applying helmfile (application platform layer)"; \
 	# helmfile diffs all releases up-front in parallel; some CRDs may not exist \
 	# yet on a fresh cluster, so skip-diff-on-install avoids spurious failures. \
@@ -526,32 +551,6 @@ langfuse-secret: ## Materialize langfuse-credentials Secret from SOPS-encrypted 
 		reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="whisperops-system" \
 		--overwrite
 	@echo "  ✓ langfuse-credentials Secret applied in observability namespace (Reflector annotations set for whisperops-system)"
-
-# ── Anthropic API key ──────────────────────────────────────────────────────────
-# SOPS-decrypts secrets/anthropic.enc.yaml → anthropic-api-key Secret in
-# kagent-system ns (key: api-key). Called by _vm-bootstrap BEFORE helmfile apply
-# so the kagent `app` container (which reads ANTHROPIC_API_KEY from this Secret)
-# finds it on first reconcile.  Reflector annotations ensure the Secret is
-# automatically mirrored to every agent-* namespace once Reflector is up.
-
-_anthropic-secret: ## Materialize anthropic-api-key Secret from SOPS-encrypted source
-	@[ -f $(SECRETS_DIR)/anthropic.enc.yaml ] || (echo "ERROR: $(SECRETS_DIR)/anthropic.enc.yaml not found" && exit 1)
-	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
-		|| (echo "ERROR: SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
-	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
-	 sops --decrypt $(SECRETS_DIR)/anthropic.enc.yaml > $$TMPF; \
-	 API_KEY=$$(grep '^ANTHROPIC_API_KEY:' $$TMPF | awk '{print $$2}'); \
-	 kubectl get namespace kagent-system >/dev/null 2>&1 || kubectl create namespace kagent-system; \
-	 kubectl create secret generic anthropic-api-key -n kagent-system \
-		--from-literal=api-key="$$API_KEY" \
-		--dry-run=client -o yaml | kubectl apply -f -; \
-	 kubectl annotate secret anthropic-api-key -n kagent-system \
-		reflector.v1.k8s.emberstack.com/reflection-allowed="true" \
-		reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces="agent-.*" \
-		reflector.v1.k8s.emberstack.com/reflection-auto-enabled="true" \
-		reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="agent-.*" \
-		--overwrite
-	@echo "  ✓ anthropic-api-key Secret applied in kagent-system (Reflector annotations set for agent-* namespaces)"
 
 # ── External access ────────────────────────────────────────────────────────────
 # Used during the regular bring-up (Stage 7 in docs/OPERATIONS.md) immediately

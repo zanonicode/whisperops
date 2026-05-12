@@ -6,7 +6,7 @@ from pathlib import Path
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 VALID_DATASET_IDS = {"california-housing", "online-retail-ii", "spotify-tracks"}
 VALID_ARCHETYPES = {"regression", "time-series", "exploratory"}
-VALID_MODELS = {"claude-haiku-4-5-20251001", "claude-sonnet-4-5-20251001"}
+VALID_MODELS = {"gemini-2.5-flash"}
 
 
 def validate_fixture(fixture_path: Path) -> list[str]:

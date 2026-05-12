@@ -42,11 +42,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.supabase.secretName }}
                   key: {{ .Values.secrets.supabase.serviceRoleKeyKey }}
-            - name: ANTHROPIC_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.secrets.anthropic.secretName }}
-                  key: {{ .Values.secrets.anthropic.apiKeyKey }}
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

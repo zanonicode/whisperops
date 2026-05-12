@@ -258,3 +258,38 @@ data "google_compute_instance" "vm" {
   name       = "whisperops-vm"
   depends_on = [module.vm]
 }
+
+###############################################################################
+# Vertex AI: API enable + kagent runtime SA + IAM (ADR-3)
+#
+# Placement: after the compute block. Shares no resources with the bootstrap
+# SA — separation of duties by design. The kagent Vertex SA is inference-only;
+# per-agent GCS SAs (provisioned by Crossplane) are unchanged.
+###############################################################################
+
+resource "google_project_service" "aiplatform" {
+  project = var.project_id
+  service = "aiplatform.googleapis.com"
+
+  disable_on_destroy = false
+}
+
+resource "google_service_account" "kagent_vertex" {
+  project      = var.project_id
+  account_id   = "whisperops-kagent-vertex"
+  display_name = "whisperops kagent → Vertex AI inference"
+  description  = "Inference-only SA for Gemini 2.5 Flash calls. Mounted as JSON-key Secret in kagent-system."
+
+  depends_on = [google_project_service.aiplatform]
+}
+
+resource "google_project_iam_member" "kagent_vertex_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.kagent_vertex.email}"
+}
+
+output "kagent_vertex_sa_email" {
+  value       = google_service_account.kagent_vertex.email
+  description = "Service account email for kagent Vertex AI inference (consumed by `make kagent-vertex-key`)"
+}

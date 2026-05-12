@@ -87,10 +87,11 @@ releases:
             # helm install attempts to create the resource or the install fails with
             # "namespaces kagent not found". kubectl apply is idempotent on re-deploy.
             sudo kubectl create namespace kagent --dry-run=client -o yaml | sudo kubectl apply -f -
-    # The Secret `anthropic-api-key` (key `api-key`) must exist in the
-    # kagent-system namespace BEFORE this release reconciles, since the
-    # `app` container references ANTHROPIC_API_KEY declaratively — bootstrap
-    # populates it from SOPS-decrypted secrets/anthropic.enc.yaml.
+    # The Secret `kagent-vertex-credentials` must exist in kagent-system
+    # before this release reconciles. `make kagent-vertex-key` (invoked by
+    # `make deploy` between gcp-bootstrap-key and build-images) generates a
+    # fresh Vertex SA JSON key and applies it as a Secret with Reflector
+    # annotations so agent-* namespaces receive copies automatically.
     # `wait: true` ensures helmfile blocks until the install fully completes.
     # Without it, helmfile may cache "deployed" even when the OCI pull failed
     # or the install rolled back silently. Timeout matches the kagent nginx
@@ -99,14 +100,14 @@ releases:
     timeout: 600
     values:
       - /tmp/whisperops/platform/values/kagent-values.yaml
-    # postRenderer is disabled. The current regex-based injection in
-    # kagent-postrender.sh produces invalid YAML on render (helmfile sync
-    # fails with "did not find expected key"). Re-enable only after rewriting
-    # the script with a proper YAML parser (ruamel.yaml or kustomize).
-    # Trade-off while disabled: AUTOGEN_DISABLE_RUNTIME_TRACING has TWO env
-    # entries (kubelet last-wins so behaviour is correct), and the kagent
-    # nginx upstream timeout reverts to the chart default of 60s.
-    # postRenderer: /tmp/whisperops/platform/values/kagent-postrender.sh
+    # postRenderer injects the Vertex SA-key volume + mount on the kagent
+    # Deployment (chart 0.4.3 does not expose app.volumes / app.volumeMounts
+    # at the values layer — ADR-9 v1.1) and also restores the kagent UI nginx
+    # proxy_read_timeout: 600s via ConfigMap volume. Uses ruamel.yaml
+    # round-trip parser (never raw sed/regex — see CLAUDE.md gotcha #9).
+    postRenderer: bash
+    postRendererArgs:
+      - /tmp/whisperops/platform/values/kagent-postrender.sh
 
   # Reflector mirrors ar-pull-secret (crossplane-system) to all agent-*
   # namespaces automatically. Must be up before the first agent scaffold.

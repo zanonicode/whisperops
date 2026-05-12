@@ -21,7 +21,7 @@
 | Repo cloned at a stable path | Yes | `git rev-parse --show-toplevel` |
 | age key at `./age.key` (root of repo) | Yes | `[ -f age.key ]` |
 | `SOPS_AGE_KEY_FILE=$PWD/age.key` exported | Yes | `echo $SOPS_AGE_KEY_FILE` |
-| `secrets/{anthropic,langfuse,openai,supabase}.enc.yaml` present and SOPS-encrypted | Yes | `grep -l '^sops:' secrets/*.enc.yaml | wc -l` → 4 |
+| `secrets/{langfuse,openai,supabase}.enc.yaml` present and SOPS-encrypted | Yes | `grep -l '^sops:' secrets/*.enc.yaml | wc -l` → 3 |
 | `terraform/envs/demo/{terraform,backend}.tfvars` customised (no `YOUR_GCP_PROJECT_ID` placeholders) | Yes | `make preflight` |
 | Tooling locally: `terraform>=1.7`, `gcloud`, `age`, `sops`, `kubectl>=1.29`, `helm>=3.14`, `helmfile>=0.163`, `make`, `node>=20`, `python3.12`, `yq`, `jq` | Yes | `which yq jq` |
 | `cnoe.localtest.me` resolves to `127.0.0.1` | Yes | `dig +short cnoe.localtest.me` |
@@ -31,7 +31,7 @@ To decrypt secrets to plaintext siblings for inspection (gitignored):
 
 ```bash
 make decrypt-secrets
-# Produces secrets/{anthropic,langfuse,openai,supabase}.dec.yaml
+# Produces secrets/{langfuse,openai,supabase}.dec.yaml
 ```
 
 You don't need this for the deploy — `_vm-bootstrap` and the secret Make targets decrypt on demand.
@@ -45,17 +45,18 @@ gcloud auth application-default login
 make deploy
 ```
 
-`make deploy` invokes six sub-targets sequentially. Each has its own readiness sentinel; the chain is robust against tf-apply→VM-ready and idpbuilder timing.
+`make deploy` invokes seven sub-targets sequentially. Each has its own readiness sentinel; the chain is robust against tf-apply→VM-ready and idpbuilder timing.
 
 | Step | What it does | Time |
 |---|---|---|
-| **preflight** | Verifies gcloud auth, tfvars placeholders cleared, age.key readable, all four SOPS files encrypted, tfstate bucket exists, `cnoe.localtest.me → 127.0.0.1` | ~5 s |
-| **tf-apply** | Provisions VM + VPC + AR repo + bootstrap SA (with IAM bindings) + datasets bucket + per-deploy external IP + firewall rules | ~3 min |
+| **preflight** | Verifies gcloud auth, tfvars placeholders cleared, age.key readable, three SOPS files encrypted (langfuse/openai/supabase), tfstate bucket exists, `cnoe.localtest.me → 127.0.0.1` | ~5 s |
+| **tf-apply** | Provisions VM + VPC + AR repo + bootstrap SA (with IAM bindings) + Vertex AI API enable + kagent Vertex SA (`whisperops-kagent-vertex` with `roles/aiplatform.user`) + datasets bucket + per-deploy external IP + firewall rules | ~3 min |
 | **upload-datasets** | Uploads `datasets/*.csv` to `gs://<project>-datasets/` (idempotent via `--no-clobber`) | ~30 s |
 | **copy-repo** | rsync repo to `/tmp/whisperops` on the VM. Polls SSH:22 up to 5 min — `tf-apply` returns before sshd is ready | ~1 min |
 | **gcp-bootstrap-key** | Generates fresh SA key, scp's to VM, applies as Secret `gcp-bootstrap-sa-key` in `crossplane-system`. Waits up to 20 min for cloud-init to ready kubectl + sudo NOPASSWD + cluster API. | ~10 s after wait |
+| **kagent-vertex-key** | Generates fresh Vertex SA JSON key for `whisperops-kagent-vertex`, scp's to VM, applies as Secret `kagent-vertex-credentials` in `kagent-system` with Reflector annotations → replicates to `agent-*` namespaces. | ~10 s |
 | **build-images** | SSH to VM, build 4 whisperops images (`budget-controller`, `platform-bootstrap`, `sandbox`, `chat-frontend`), push to Artifact Registry | ~5 min |
-| **deploy-vm** | SSH to VM, run `_vm-bootstrap` inside. Polls `/var/log/whisperops-bootstrap.log` for "whisperops bootstrap complete" sentinel up to 25 min — the startup-script does `idpbuilder create` and an ArgoCD-Synced/Healthy gate. Then helmfile apply, push the repo + root-app to in-cluster Gitea, materialize `langfuse-credentials` and `anthropic-api-key` Secrets, sync Backstage templates with sed-baked `base_domain` + `project_id`, regenerate external Ingresses, update the `platform-config` ConfigMap. | ~10-15 min |
+| **deploy-vm** | SSH to VM, run `_vm-bootstrap` inside. Polls `/var/log/whisperops-bootstrap.log` for "whisperops bootstrap complete" sentinel up to 25 min — the startup-script does `idpbuilder create` and an ArgoCD-Synced/Healthy gate. Then helmfile apply (with postRenderer injecting Vertex SA-key volume on kagent Deployment), push the repo + root-app to in-cluster Gitea, materialize `langfuse-credentials` Secret, sync Backstage templates with sed-baked `base_domain` + `project_id`, regenerate external Ingresses, update the `platform-config` ConfigMap. | ~10-15 min |
 
 **Total clean deploy: ~25 min.** Idempotent — re-running on existing infra is a no-op except `build-images`, which always rebuilds.
 

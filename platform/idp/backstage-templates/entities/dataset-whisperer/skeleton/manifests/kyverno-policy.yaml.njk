@@ -8,7 +8,7 @@ metadata:
     policies.kyverno.io/title: Agent-specific Egress Allowlist
     policies.kyverno.io/description: >-
       Per-agent namespace egress policy for ${{ values.agent_name }}.
-      Allows traffic to sandbox, Supabase, Anthropic API, and DNS only.
+      Allows traffic to sandbox, Supabase, Vertex AI, and DNS only.
 spec:
   validationFailureAction: Enforce
   rules:

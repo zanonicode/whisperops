@@ -10,7 +10,7 @@ metadata:
     whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
   description: "Dataset Whisperer writer — composes the user-facing markdown answer from the analyst's findings. No tools."
-  modelConfig: model-fast
+  modelConfig: model
   systemMessage: |
     You are the writer for Dataset Whisperer agent "${{ values.agent_name }}".
     Dataset: "${{ values.dataset_id }}".

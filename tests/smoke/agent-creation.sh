@@ -44,7 +44,6 @@ SUBMIT_PAYLOAD=$(cat <<EOF
     "agent_name": "${TEST_AGENT_NAME}",
     "description": "Automated smoke test agent",
     "dataset_id": "${TEST_DATASET}",
-    "primary_model": "claude-sonnet-4-5-20250929",
     "budget_usd": "1.00"
   }
 }
@@ -87,8 +86,19 @@ DEADLINE=$((SECONDS + MAX_WAIT_S))
 while [[ $SECONDS -lt $DEADLINE ]]; do
   if kubectl get namespace "$AGENT_NS" >/dev/null 2>&1; then
     AGENT_COUNT=$(kubectl get agents.kagent.dev -n "$AGENT_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    MC_COUNT=$(kubectl get modelconfigs.kagent.dev -n "$AGENT_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$AGENT_COUNT" -ge 3 ]]; then
-      echo "PASS  Agent namespace $AGENT_NS has $AGENT_COUNT Agent CRDs"
+      echo "PASS  Agent namespace $AGENT_NS has $AGENT_COUNT Agent CRDs, $MC_COUNT ModelConfig CRs"
+      if kubectl get modelconfigs.kagent.dev -n "$AGENT_NS" -o jsonpath='{.items[0].spec.provider}' 2>/dev/null | grep -q "GeminiVertexAI"; then
+        echo "PASS  ModelConfig provider is GeminiVertexAI"
+      else
+        echo "WARN  ModelConfig provider check: $(kubectl get modelconfigs.kagent.dev -n "$AGENT_NS" -o jsonpath='{.items[0].spec.provider}' 2>/dev/null)"
+      fi
+      if kubectl get modelconfigs.kagent.dev -n "$AGENT_NS" -o jsonpath='{.items[0].spec.model}' 2>/dev/null | grep -q "gemini-2.5-flash"; then
+        echo "PASS  ModelConfig model is gemini-2.5-flash"
+      else
+        echo "WARN  ModelConfig model check: $(kubectl get modelconfigs.kagent.dev -n "$AGENT_NS" -o jsonpath='{.items[0].spec.model}' 2>/dev/null)"
+      fi
       break
     fi
   fi

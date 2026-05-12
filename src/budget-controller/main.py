@@ -26,6 +26,43 @@ LANGFUSE_PUBLIC_KEY = os.environ["LANGFUSE_PUBLIC_KEY"]
 LANGFUSE_SECRET_KEY = os.environ["LANGFUSE_SECRET_KEY"]
 OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector.observability:4317")
 
+VERTEX_GEMINI_PRICING: dict[str, dict[str, float]] = {
+    "gemini-2.5-flash": {
+        "input": 0.30,
+        "output": 2.50,
+        "cached_input": 0.03,
+    },
+    "gemini-2.5-flash-lite": {
+        "input": 0.10,
+        "output": 0.40,
+        "cached_input": 0.01,
+    },
+    "gemini-2.0-flash": {
+        "input": 0.15,
+        "output": 0.60,
+        "cached_input": 0.0375,
+    },
+    "gemini-2.0-flash-lite": {
+        "input": 0.075,
+        "output": 0.30,
+        "cached_input": 0.01875,
+    },
+}
+
+
+def compute_cost_usd(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+) -> float:
+    p = VERTEX_GEMINI_PRICING[model]
+    return (
+        (input_tokens / 1_000_000) * p["input"]
+        + (output_tokens / 1_000_000) * p["output"]
+        + (cached_input_tokens / 1_000_000) * p["cached_input"]
+    )
+
 
 def _setup_telemetry() -> tuple[trace.Tracer, metrics.Meter]:
     resource = Resource.create({"service.name": "budget-controller"})
@@ -207,7 +244,10 @@ def main() -> None:
     logger.info("Budget controller started, polling every %ds", POLL_INTERVAL_S)
 
     while True:
-        with tracer.start_as_current_span("budget_controller.run_once"):
+        with tracer.start_as_current_span("budget_controller.run_once") as span:
+            span.set_attribute("gen_ai.provider.name", "gcp.vertex_ai")
+            span.set_attribute("gen_ai.system", "gcp.vertex_ai")
+            span.set_attribute("gen_ai.request.model", "gemini-2.5-flash")
             try:
                 run_once(custom_api, apps_api, core_api)
             except Exception as exc:

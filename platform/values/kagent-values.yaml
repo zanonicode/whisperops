@@ -1,54 +1,42 @@
-# autogen_ext AnthropicChatCompletionClient instantiates anthropic.Anthropic()
-# WITHOUT passing the api_key from the Secret-backed ModelConfig chain. The SDK
-# resolves auth solely from the env var at process startup. Without
-# ANTHROPIC_API_KEY on the `app` container, every Agent invoke fails with:
-#   "Could not resolve authentication method. Expected either api_key or
-#    auth_token to be set."
+# The autogen Vertex client reads auth from GOOGLE_APPLICATION_CREDENTIALS env
+# at process startup. ModelConfig.apiKeySecretRef alone is insufficient — the
+# env var is load-bearing.
 #
-# Source of truth for the value is the `anthropic-api-key` Secret in
-# kagent-system (key `api-key`). The same Secret is replicated into each
-# agent-* namespace by Reflector and referenced by ModelConfig.apiKeySecretRef.
+# Provider key is GeminiVertexAI (kagent v1alpha1 CRD enum; ADR-10).
+# Volume + volumeMount injection for the Vertex SA-key Secret is handled by
+# kagent-postrender.sh (Path B, ADR-9 v1.1) — chart 0.4.3 does not expose
+# app.volumes / app.volumeMounts at the values layer.
 #
 # Schema verified against kagent helm chart oci://ghcr.io/kagent-dev/kagent/helm/kagent:0.4.3
-#   templates/deployment.yaml: container `app` declares `env:` with chart-default
-#   vars, then `{{- with .Values.app.env }}{{- toYaml . | nindent 12 }}{{- end }}`
-#   which appends additional env vars verbatim.
-# Default provider is set to anthropic so the querydoc container only mounts
-# kagent-anthropic (optional) rather than kagent-openai (non-optional by chart
-# default). Without this, querydoc fails CreateContainerConfigError because the
-# kagent-openai secret is absent. apiKeySecretRef points at the same secret
-# bootstrap populates.
+#   templates/deployment.yaml appends .Values.app.env verbatim after chart defaults.
 providers:
-  default: anthropic
-  anthropic:
-    provider: Anthropic
-    model: "claude-sonnet-4-5"
-    apiKeySecretRef: anthropic-api-key
-    apiKeySecretKey: api-key
+  default: geminiVertexAI
+  geminiVertexAI:
+    provider: GeminiVertexAI
+    model: "gemini-2.5-flash"
+    apiKeySecretRef: kagent-vertex-credentials
+    apiKeySecretKey: credentials.json
+    geminiVertexAI:
+      projectID: whisperops
+      location: us-central1
 
 app:
   env:
-    - name: ANTHROPIC_API_KEY
-      valueFrom:
-        secretKeyRef:
-          name: anthropic-api-key
-          key: api-key
-    # The chart hardcodes AUTOGEN_DISABLE_RUNTIME_TRACING=true, which kills
-    # all LLM/agent spans. Re-declaring with "false" causes Kubernetes to use
-    # the second occurrence (the appended one wins), turning runtime tracing
-    # back on so spans actually flow to the OTel collector.
+    - name: GOOGLE_APPLICATION_CREDENTIALS
+      value: /var/secrets/google/credentials.json
+    - name: GOOGLE_GENAI_USE_VERTEXAI
+      value: "true"
+    - name: GOOGLE_CLOUD_PROJECT
+      value: whisperops
+    - name: GOOGLE_CLOUD_LOCATION
+      value: us-central1
     - name: AUTOGEN_DISABLE_RUNTIME_TRACING
       value: "false"
-    # Resource attribute so Tempo/Grafana can group spans by service.
     - name: OTEL_SERVICE_NAME
       value: "kagent-app"
     - name: OTEL_RESOURCE_ATTRIBUTES
       value: "service.namespace=kagent-system,deployment.environment=dev"
 
-# Enable OTel tracing -> in-cluster otel-collector. Our collector exports
-# to Tempo (http://lgtm-distributed-tempo-distributor:4318) and the
-# k8sattributes processor enriches every span with the agent.id /
-# agent.role labels lifted from the pod.
 otel:
   tracing:
     enabled: true
@@ -58,8 +46,6 @@ otel:
         timeout: 15
         insecure: true
 
-# Disable kagent built-in demo agents — we only use scaffolded
-# dataset-whisperer agents in agent-* namespaces.
 argo-rollouts-agent:
   enabled: false
 cilium-debug-agent:

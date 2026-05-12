@@ -28,7 +28,7 @@ The platform installs in three sequential layers: cloud floor → IDP → applic
 ```mermaid
 flowchart TB
   subgraph EXT["External SaaS / operator"]
-    ANTH["Anthropic API<br/>(Sonnet 4.5)"]
+    VTXAI["Vertex AI<br/>(Gemini 2.5 Flash, us-central1)"]
     OAI["OpenAI<br/>(embeddings)"]
     LFC["Langfuse Cloud (US)<br/>traces + cost"]
     OPER["Operator<br/>gcloud + age key"]
@@ -51,7 +51,7 @@ flowchart TB
   OPER -->|tf-apply| GCP
   IDP --> PLAT --> AGENT
   CFG --> AGENT
-  AGENT -.uses.-> ANTH
+  AGENT -.uses.-> VTXAI
   AGENT -.uses.-> OAI
   AGENT -->|OTel| PLAT
   PLAT -->|otlphttp/langfuse| LFC
@@ -63,11 +63,12 @@ flowchart TB
 Architectural specifics worth knowing up front:
 
 - **Per-agent isolation** — each agent lives in its own `agent-{name}` namespace with a dedicated GCS bucket, GCP service account, SA key, sandbox pod, chat-frontend pod, and Ingress. No shared sandbox pool.
-- **3-agent A2A** — Planner orchestrates Analyst (compute via the per-agent sandbox `execute_python` MCP tool) and Writer (markdown prose). All three reference the same `model-primary` ModelConfig (Sonnet 4.5).
+- **3-agent A2A** — Planner orchestrates Analyst (compute via the per-agent sandbox `execute_python` MCP tool) and Writer (markdown prose). All three reference the same `model` ModelConfig (Gemini 2.5 Flash via Vertex AI).
 - **Two install layers** of the platform: cloud floor (Terraform) and application platform (helmfile, then ArgoCD app-of-apps takes over for per-agent stacks).
 - **Two-pane observability** — Langfuse Cloud (LLM ops view) plus LGTM in-cluster (Mimir/Tempo/Loki/Grafana) for infra and traces. The OTel collector dual-exports.
 - **Sed-bake at template-publish** — `base_domain` and `project_id` are hidden, sed-baked into the Backstage scaffolder template by `_vm-bootstrap` from the live VM IP and project ID. The operator only sees `agent_name`, `description`, `dataset_id`, `budget_usd`.
 - **Bootstrap SA key is ephemeral** — generated fresh per deploy via `make gcp-bootstrap-key`. Not stored in `secrets/`.
+- **Vertex SA key is ephemeral** — generated fresh per deploy via `make kagent-vertex-key`. Applied as Secret `kagent-vertex-credentials` in `kagent-system`, Reflector-replicated to `agent-*`. Mounted on the kagent `app` container for ADC-authenticated Vertex AI inference.
 - **`ar-pull-secret` is auto-managed** — Reflector replicates from a source Secret in `crossplane-system`, with a 30-min token-rotation CronJob.
 
 ## Documentation
@@ -146,6 +147,7 @@ Backstage SSO via Keycloak requires an SSH tunnel — see [`docs/OPERATIONS.md`]
 | `make destroy FORCE=1 PROJECT_ID=<id>` | Full teardown: empty buckets → drain Crossplane → drop Argo CRDs → orphan firewalls → terraform destroy → orphan IAM cleanup |
 | `make smoke-test` | Assert platform up, agents reachable, ArgoCD healthy (runs on VM via SSH) |
 | `make langfuse-secret` | Materialize `langfuse-credentials` Secret in `observability` ns from SOPS-encrypted source |
+| `make kagent-vertex-key` | Generate fresh Vertex SA key and apply as Secret `kagent-vertex-credentials` in `kagent-system` |
 | `make external-ingresses VM_IP=<ip>` | Regenerate sslip.io ingresses for the current VM IP |
 | `make upload-datasets` | Upload `datasets/*.csv` to `gs://whisperops-datasets/` (also auto-invoked by `make deploy`) |
 | `make decrypt-secrets` | Decrypt `secrets/*.enc.yaml` → `secrets/*.dec.yaml` (gitignored) |

@@ -1,117 +1,96 @@
 #!/usr/bin/env bash
-# DISABLED — currently not invoked by helmfile (the postRenderer line is
-# commented out). Preserved here as a starting point for a future rewrite that
-# uses a proper YAML parser (ruamel.yaml or kustomize) instead of the regex
-# injection below, which is the reason the postRenderer is currently off.
+# kagent postRenderer — injects the Vertex SA-key volume + mount into the
+# kagent Deployment and restores the kagent UI nginx proxy_read_timeout: 600s.
 #
-# Purpose (when enabled):
-#   1. The kagent chart hardcodes
-#        AUTOGEN_DISABLE_RUNTIME_TRACING=true
-#      in the `app` container's static env list, BEFORE the user-supplied
-#      `app.env`. We add `=false` via app.env in kagent-values.yaml; rendered
-#      manifests therefore contain TWO entries with the same name. kubelet
-#      implements "last wins" so things work, but defense-in-depth: this
-#      script strips the chart-default `=true` entry so the final manifest
-#      has exactly ONE `AUTOGEN_DISABLE_RUNTIME_TRACING` env var.
-#   2. The kagent chart exposes no ui.nginx.* timeout keys, so this script
-#      also patches the Deployment spec to:
-#        a. Add a volume backed by the kagent ui-nginx ConfigMap
-#        b. Mount it on the `ui` container at /etc/nginx/nginx.conf
-#           (subPath: nginx.conf)
-#      The ConfigMap is applied separately
-#      (platform/values/kagent-nginx-timeout.yaml).
+# Reads helm-rendered multi-doc YAML from stdin (via temp file — direct
+# heredoc redirection consumes stdin before python can read it, producing
+# an empty render and a silent helmfile "deployed" with zero pods).
+# Writes patched output to stdout. Idempotent.
 #
-# Uses python3 (not yq) because yq is not available on the target VM.
-# Reads helm-rendered multi-doc YAML from stdin, writes patched output to stdout.
-# Idempotent.
+# Uses ruamel.yaml (round-trip parser) — NEVER raw sed/regex (the prior
+# approach produced invalid YAML; see CLAUDE.md gotcha #9 for context).
+#
+# Mutations performed:
+#   1. kagent Deployment (name=kagent):
+#      a. volumes[]   — append vertex-sa-key Secret volume (if not present)
+#      b. containers[name=app].volumeMounts[] — append mount at
+#         /var/secrets/google (if not present)
+#   2. kagent Deployment (name=kagent):
+#      Nginx ui container proxy_read_timeout — handled separately via
+#      the kagent-nginx-timeout ConfigMap volume (injected in item 1a too).
 set -euo pipefail
 
-# Write the python script to a temp file rather than passing it via heredoc:
-#   python3 - "$@" <<'PYEOF' ... PYEOF
-# heredoc redirection consumes stdin, leaving nothing for sys.stdin.read() to
-# receive. The helm post-renderer protocol pipes the rendered manifest to the
-# bash script's own stdin, so the heredoc form collides with that and emits
-# an EMPTY rendered output. Helmfile then installs the empty release as
-# "deployed" — the helm-secret record is created but zero resources land in
-# the cluster. The temp-file pattern keeps stdin available for the
-# helm-rendered YAML.
-TMP_PY=$(mktemp -t kagent-postrender.XXXXXX)
-trap 'rm -f "$TMP_PY"' EXIT
-cat > "$TMP_PY" <<'PYEOF'
+TMPF=$(mktemp -t kagent-postrender.XXXXXX)
+trap 'rm -f "$TMPF"' EXIT
+cat > "$TMPF"
+
+python3 - "$TMPF" <<'PY'
 import sys
-import re
+import io
+from ruamel.yaml import YAML
 
-input_text = sys.stdin.read()
+yaml = YAML(typ="rt")
+yaml.preserve_quotes = True
+yaml.indent(mapping=2, sequence=4, offset=2)
 
-# Split on YAML document separators, preserving the separator with the doc
-docs_raw = re.split(r'(?m)^---\s*$', input_text)
-out_docs = []
+src = open(sys.argv[1]).read()
+docs = list(yaml.load_all(src))
 
-for raw in docs_raw:
-    stripped = raw.strip()
-    if not stripped:
-        out_docs.append(raw)
+for d in docs:
+    if not d:
+        continue
+    if d.get("kind") != "Deployment":
+        continue
+    if d.get("metadata", {}).get("name") != "kagent":
         continue
 
-    # Only manipulate the Deployment document
-    if 'kind: Deployment' not in stripped:
-        out_docs.append(raw)
-        continue
+    spec = d["spec"]["template"]["spec"]
 
-    # --- deduplicate AUTOGEN_DISABLE_RUNTIME_TRACING env var ---
-    # Remove the chart-default `=true` entry; keep the user-supplied `=false`.
-    # The pattern matches the chart-default block:
-    #   - name: AUTOGEN_DISABLE_RUNTIME_TRACING
-    #     value: "true"
-    # We remove duplicate entries keeping only the last occurrence.
-    lines = raw.split('\n')
-    autogen_indices = []
-    for i, line in enumerate(lines):
-        if 'AUTOGEN_DISABLE_RUNTIME_TRACING' in line and i + 1 < len(lines):
-            autogen_indices.append(i)
+    # ── 1a: volumes ──────────────────────────────────────────────────────────
+    vols = spec.setdefault("volumes", [])
+    if not any(v.get("name") == "vertex-sa-key" for v in vols):
+        vols.append({
+            "name": "vertex-sa-key",
+            "secret": {
+                "secretName": "kagent-vertex-credentials",
+                "defaultMode": 0o400,
+            },
+        })
 
-    if len(autogen_indices) > 1:
-        # Keep last occurrence; remove all prior ones (plus their value: line)
-        to_remove = set()
-        for idx in autogen_indices[:-1]:
-            to_remove.add(idx)
-            if idx + 1 < len(lines) and 'value:' in lines[idx + 1]:
-                to_remove.add(idx + 1)
-        lines = [l for i, l in enumerate(lines) if i not in to_remove]
-        raw = '\n'.join(lines)
+    # ── 1b: ui nginx ConfigMap volume (restores proxy_read_timeout: 600s) ────
+    if not any(v.get("name") == "kagent-nginx-timeout" for v in vols):
+        vols.append({
+            "name": "kagent-nginx-timeout",
+            "configMap": {
+                "defaultMode": 420,
+                "name": "kagent-nginx-timeout",
+            },
+        })
 
-    # --- add the ui-nginx-timeout-override ConfigMap volume if not present ---
-    if 'kagent-nginx-timeout' not in raw:
-        # Find the volumes: section and append our volume entry after sqlite-volume
-        raw = re.sub(
-            r'(      - emptyDir:.*?name: sqlite-volume)',
-            r'\1\n      - configMap:\n          defaultMode: 420\n          name: kagent-nginx-timeout\n        name: kagent-nginx-timeout',
-            raw,
-            flags=re.DOTALL
-        )
+    # ── 2: per-container volumeMounts ─────────────────────────────────────────
+    for c in spec.get("containers", []):
+        name = c.get("name", "")
 
-    # --- add volumeMount on ui container if not present ---
-    # The ui container section ends before the next container or end of containers list.
-    # We look for the ui container block and add volumeMounts if missing.
-    if 'mountPath: /etc/nginx/nginx.conf' not in raw:
-        # Find the `- name: ui` container entry and append volumeMounts
-        # Pattern: locate `        - name: ui` line and find its end (next `        - name:` or dedent)
-        raw = re.sub(
-            r'(        - name: ui\n(?:(?!        - name:).)*?)(        - name:|\Z)',
-            lambda m: m.group(1) + (
-                '          volumeMounts:\n'
-                '          - mountPath: /etc/nginx/nginx.conf\n'
-                '            name: kagent-nginx-timeout\n'
-                '            readOnly: true\n'
-                '            subPath: nginx.conf\n'
-            ) + m.group(2),
-            raw,
-            flags=re.DOTALL
-        )
+        if name == "app":
+            mounts = c.setdefault("volumeMounts", [])
+            if not any(m.get("name") == "vertex-sa-key" for m in mounts):
+                mounts.append({
+                    "name": "vertex-sa-key",
+                    "mountPath": "/var/secrets/google",
+                    "readOnly": True,
+                })
 
-    out_docs.append(raw)
+        if name == "ui":
+            mounts = c.setdefault("volumeMounts", [])
+            if not any(m.get("mountPath") == "/etc/nginx/nginx.conf" for m in mounts):
+                mounts.append({
+                    "name": "kagent-nginx-timeout",
+                    "mountPath": "/etc/nginx/nginx.conf",
+                    "subPath": "nginx.conf",
+                    "readOnly": True,
+                })
 
-print('---'.join(out_docs), end='')
-PYEOF
-
-python3 "$TMP_PY"
+buf = io.StringIO()
+yaml.dump_all(docs, buf)
+sys.stdout.write(buf.getvalue())
+PY

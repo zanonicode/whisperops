@@ -9,9 +9,9 @@ metadata:
     policies.kyverno.io/subject: Namespace
     policies.kyverno.io/description: >-
       Generates a default NetworkPolicy for every agent-* namespace that
-      restricts egress to the sandbox service, Supabase, Anthropic API,
-      and DNS only. Namespaces without an explicit Kyverno Policy override
-      get this default.
+      restricts egress to the sandbox service, Supabase, Vertex AI
+      (us-central1-aiplatform.googleapis.com), and DNS only. Namespaces
+      without an explicit Kyverno Policy override get this default.
 spec:
   rules:
     - name: generate-agent-egress-networkpolicy

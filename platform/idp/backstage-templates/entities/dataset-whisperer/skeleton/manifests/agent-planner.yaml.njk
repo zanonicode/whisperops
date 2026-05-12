@@ -10,7 +10,7 @@ metadata:
     whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
   description: "Dataset Whisperer orchestrator — routes user questions to the Analyst for computation and the Writer for user-facing prose."
-  modelConfig: model-primary
+  modelConfig: model
   systemMessage: |
     You are the orchestrator for the Dataset Whisperer agent "${{ values.agent_name }}".
     The dataset is "${{ values.dataset_id }}".
