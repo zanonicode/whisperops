@@ -114,7 +114,7 @@ The smoke target runs on the VM via SSH because the operator's local kubectl has
 | All sslip.io URLs change after a destroy + redeploy | The VM external IP is allocated fresh on every `tf-apply` cycle | Fetch the new IP per the snippet above; Ingresses are regenerated automatically by `_vm-bootstrap` |
 | `sops --decrypt` fails with "Error getting data key: 0 successful groups required, got 0" on a fresh laptop | Local clock skew | Resync system time (`sntp -sS time.apple.com` on macOS, `systemctl status systemd-timesyncd` on Linux) |
 | `chat-frontend` pod `ImagePullBackOff` mid-day | `ar-pull-secret` token expired and Reflector hasn't replicated the refreshed copy yet | The 30-min rotation CronJob should self-heal; force-restart Reflector pods if it doesn't: `kubectl delete pod -n reflector -l app.kubernetes.io/name=reflector` |
-| `kagent` pod `CrashLoopBackOff` immediately after deploy | `anthropic-api-key` Secret missing or unreadable | `kubectl get secret anthropic-api-key -n kagent-system`; re-run `_anthropic-secret` Make target manually if needed |
+| `kagent-controller` pod `CrashLoopBackOff` immediately after deploy | `kagent-vertex-credentials` Secret missing or not yet created | `kubectl get secret kagent-vertex-credentials -n kagent-system`; re-run `make kagent-vertex-key` if Secret is absent |
 
 ### Teardown
 
@@ -148,8 +148,8 @@ make destroy SKIP_CROSSPLANE=1 FORCE=1 PROJECT_ID=<project-id>
    - `budget_usd` — numeric, e.g. `5.00`.
 5. Submit. Backstage opens a PR in the in-cluster Gitea repo `whisperops/agent-{name}`.
 6. ArgoCD detects the new path within ~30 s and syncs from `manifests/` subfolder.
-7. Sync wave order: Namespace → Crossplane resources → kagent ModelConfig + Agent CRs → Sandbox + chat-frontend.
-8. Once ArgoCD reports the new Application `Synced/Healthy` (≤ 90 s), browse to `https://agent-{name}.${VM_IP}.sslip.io:8443/`. Ask a question.
+7. Sync wave order: Namespace → `agent-prompts` ConfigMap (wave 0) → kagent ModelConfig (wave 1) → Agent CRs planner/analyst/writer + Kyverno Policy (wave 2) → Sandbox + chat-frontend.
+8. Once ArgoCD reports the new Application `Synced/Healthy` (≤ 90 s), browse to `https://agent-{name}.${VM_IP}.sslip.io:8443/`. Ask a question. Expect **at least 3 agent pods** (`planner`, `analyst`, `writer`) in the namespace — each Agent CR gets its own Deployment in kagent v0.9.x.
 
 Note that `base_domain` and `project_id` are NOT user-visible form inputs — `_vm-bootstrap` sed-bakes the live VM IP and project ID into the template before pushing it to Gitea.
 
@@ -162,14 +162,29 @@ kk 'sudo kubectl get applications -n argocd'
 # A specific app
 kk "sudo kubectl describe application agent-{name} -n argocd"
 
-# Per-agent Crossplane resources
+# Per-agent Crossplane + kagent resources (expect 3 Agent CRs + 1 ModelConfig)
 kk "sudo kubectl get bucket,serviceaccount.cloudplatform.gcp.upbound.io,serviceaccountkey,projectiammember,modelconfig.kagent.dev,agent.kagent.dev -n agent-{name}"
 
-# kagent runtime tail
-kk 'sudo kubectl logs -n kagent-system -l app=kagent --tail=50 -f'
+# Per-agent pods — expect ≥ 3 (planner, analyst, writer each have own Deployment)
+kk "sudo kubectl get pods -n agent-{name} -l whisperops/component=agent"
+
+# kagent controller tail
+kk 'sudo kubectl logs -n kagent-system deploy/kagent-controller --tail=50 -f'
 
 # Chat-frontend pod for the new agent
 kk "sudo kubectl get pods,svc,ingress -n agent-{name}"
+```
+
+### Rotating an agent system prompt
+
+The `agent-prompts` ConfigMap in each `agent-{name}` namespace holds `planner.md`, `analyst.md`, and `writer.md` keys. The controller polls for changes (eventual-consistency, lag up to ~2 min) and rolls the affected Deployment automatically. If you need immediate effect:
+
+```bash
+# Edit a prompt in-place (e.g. planner.md)
+kk "sudo kubectl edit configmap agent-prompts -n agent-{name}"
+
+# Force immediate rollout after edit (if not waiting for controller poll)
+kk "sudo kubectl rollout restart deployment/planner -n agent-{name}"
 ```
 
 ### Deleting an agent

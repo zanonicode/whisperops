@@ -12,41 +12,89 @@ const AGENT_REF = `${AGENT_NAMESPACE}/${AGENT_NAME}`;
 
 let cachedTeamConfig: unknown = null;
 
+// kagent has a two-layer state model: K8s CRs (desired) vs an in-process SQLite
+// registry (runtime). The reconciler inserts CRs into SQLite asynchronously, so
+// for the first few seconds after a fresh agent scaffold, kagent's HTTP API
+// returns 404 with "record not found" / "Agent not found" / "failed to get
+// model" while the reconciler catches up. Retry only that specific signature.
+const SQLITE_RACE_PATTERN = /record not found|agent not found|failed to get (model|agent)/i;
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+function isSqliteRaceTransient(status: number, bodyText: string): boolean {
+  return status === 404 && SQLITE_RACE_PATTERN.test(bodyText);
+}
+
+async function withSqliteRaceRetry<T>(
+  op: () => Promise<T>,
+  label: string,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await op();
+    } catch (err) {
+      lastErr = err;
+      const transient =
+        err instanceof KagentRaceError && isSqliteRaceTransient(err.status, err.bodyText);
+      if (!transient || attempt === RETRY_DELAYS_MS.length) throw err;
+      const delay = RETRY_DELAYS_MS[attempt];
+      console.warn(
+        `${label}: SQLite race detected (HTTP ${(err as KagentRaceError).status}), ` +
+          `retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_DELAYS_MS.length})`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastErr;
+}
+
+class KagentRaceError extends Error {
+  constructor(public readonly status: number, public readonly bodyText: string, message: string) {
+    super(message);
+    this.name = 'KagentRaceError';
+  }
+}
+
 async function fetchTeamConfig(): Promise<unknown> {
   if (cachedTeamConfig) return cachedTeamConfig;
   const url = `${KAGENT_BASE_URL}/api/agents/${AGENT_NAMESPACE}/${AGENT_NAME}`;
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) {
-    throw new Error(`kagent /api/agents fetch failed: HTTP ${res.status}`);
-  }
-  const body = (await res.json()) as { data?: { component?: unknown } };
-  if (!body.data?.component) {
-    throw new Error('kagent /api/agents response missing data.component');
-  }
-  cachedTeamConfig = body.data.component;
+  cachedTeamConfig = await withSqliteRaceRetry(async () => {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new KagentRaceError(res.status, text, `kagent /api/agents fetch failed: HTTP ${res.status} ${text}`);
+    }
+    const body = (await res.json()) as { data?: { component?: unknown } };
+    if (!body.data?.component) {
+      throw new Error('kagent /api/agents response missing data.component');
+    }
+    return body.data.component;
+  }, 'fetchTeamConfig');
   return cachedTeamConfig;
 }
 
 async function createSession(): Promise<string> {
   const url = `${KAGENT_BASE_URL}/api/sessions`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user_id: USER_ID,
-      agent_ref: AGENT_REF,
-      name: `chat-${Date.now()}`,
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`kagent createSession failed: HTTP ${res.status} ${text}`);
-  }
-  const body = (await res.json()) as { data?: { id?: string } };
-  if (!body.data?.id) {
-    throw new Error('kagent createSession response missing data.id');
-  }
-  return body.data.id;
+  return withSqliteRaceRetry(async () => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: USER_ID,
+        agent_ref: AGENT_REF,
+        name: `chat-${Date.now()}`,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new KagentRaceError(res.status, text, `kagent createSession failed: HTTP ${res.status} ${text}`);
+    }
+    const body = (await res.json()) as { data?: { id?: string } };
+    if (!body.data?.id) {
+      throw new Error('kagent createSession response missing data.id');
+    }
+    return body.data.id;
+  }, 'createSession');
 }
 
 function isSessionNotFound(err: unknown): boolean {

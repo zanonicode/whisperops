@@ -1,0 +1,39 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-a2a
+  namespace: agent-${{ values.agent_name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS to kube-dns (kube-system)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Cross-pod A2A within the cluster pod-CIDR
+    - to:
+        - ipBlock:
+            cidr: 10.244.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8083
+    # HTTPS to external Google APIs (Vertex AI, oauth2, GCS).
+    # IP ranges for Google APIs are large + dynamic, so exclude pod-CIDR rather
+    # than enumerate destinations. The agent-level `spec.sandbox.network.
+    # allowedDomains` filter narrows what each agent may actually call.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.244.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

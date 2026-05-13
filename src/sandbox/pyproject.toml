@@ -8,23 +8,23 @@ version = "0.1.0"
 description = "Sandboxed Python code execution service for Dataset Whisperer"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi==0.115.5",
-    "uvicorn[standard]==0.32.1",
+    "fastapi==0.115.12",
+    "uvicorn[standard]==0.34.2",
     "pydantic>=2.11.0,<3",
-    "google-cloud-storage==2.18.2",
-    "opentelemetry-api==1.28.2",
-    "opentelemetry-sdk==1.28.2",
-    "opentelemetry-instrumentation-fastapi==0.49b2",
-    "opentelemetry-exporter-otlp-proto-grpc==1.28.2",
-    "mcp==1.27.0",
+    "google-cloud-storage==2.19.0",
+    "opentelemetry-api==1.33.1",
+    "opentelemetry-sdk==1.33.1",
+    "opentelemetry-instrumentation-fastapi==0.54b0",
+    "opentelemetry-exporter-otlp-proto-grpc==1.33.1",
+    "mcp==1.27.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.3.4",
-    "pytest-asyncio==0.24.0",
+    "pytest==8.3.5",
+    "pytest-asyncio==0.26.0",
     "httpx==0.28.1",
-    "ruff==0.8.6",
+    "ruff==0.11.9",
 ]
 
 [tool.ruff]

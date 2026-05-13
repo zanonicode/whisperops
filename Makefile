@@ -50,11 +50,11 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 	@! grep -q "YOUR_GCP_PROJECT_ID" $(TF_ENV_DIR)/backend.tfvars 2>/dev/null \
 		|| (echo "  ✗ terraform/envs/demo/backend.tfvars still has placeholder bucket name" && exit 1)
 	@echo "  ✓ backend.tfvars customised"
-	@for api in compute.googleapis.com storage.googleapis.com iam.googleapis.com iamcredentials.googleapis.com; do \
+	@for api in serviceusage.googleapis.com cloudresourcemanager.googleapis.com; do \
 		gcloud services list --enabled --project="$(PROJECT_ID)" --filter="config.name=$$api" --format="value(name)" 2>/dev/null | grep -q . \
-			|| (echo "  ✗ API not enabled on $(PROJECT_ID): $$api" && exit 1); \
+			|| (echo "  ✗ Bootstrap API not enabled on $(PROJECT_ID): $$api — enable manually: gcloud services enable $$api --project=$(PROJECT_ID)" && exit 1); \
 	done
-	@echo "  ✓ Required APIs enabled on project $(PROJECT_ID)"
+	@echo "  ✓ Bootstrap APIs (serviceusage + cloudresourcemanager) enabled on $(PROJECT_ID); platform APIs are TF-managed"
 	@BUCKET=$$(grep -E '^bucket' $(TF_ENV_DIR)/backend.tfvars | sed -E 's/.*"([^"]+)".*/\1/'); \
 	gcloud storage buckets describe "gs://$$BUCKET" --format=none 2>/dev/null \
 		|| (echo "  ✗ tfstate bucket gs://$$BUCKET not found — pre-create it manually" && exit 1); \
@@ -265,10 +265,8 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	# helmfile diffs all releases up-front in parallel; some CRDs may not exist \
 	# yet on a fresh cluster, so skip-diff-on-install avoids spurious failures. \
 	helmfile -f platform/helmfile.yaml.gotmpl apply --skip-diff-on-install; \
-	echo "→ Patching kagent ui container with nginx-timeout ConfigMap mount"; \
-	bash /tmp/whisperops/scripts/patch-kagent-ui-nginx.sh; \
 	echo "→ Applying kagent-toolserver-secret in kagent namespace (chart ships ToolServer in kagent ns referencing a Secret in kagent-system)"; \
-	kubectl apply -f /tmp/whisperops/platform/values/kagent-mcp-grafana-secret.yaml | sed 's/^/  /'; \
+	kubectl apply -f /tmp/whisperops/platform/values/kagent-mcp-grafana-secret.yaml; \
 	# Keycloak scale-to-zero is intentionally disabled: Keycloak must stay active \
 	# to serve OIDC login via the SSH tunnel. Re-enable only when Backstage moves \
 	# to a guest-auth provider that does not require Keycloak. \

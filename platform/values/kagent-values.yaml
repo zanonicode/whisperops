@@ -1,26 +1,23 @@
-# The autogen Vertex client reads auth from GOOGLE_APPLICATION_CREDENTIALS env
-# at process startup. ModelConfig.apiKeySecretRef alone is insufficient — the
-# env var is load-bearing.
+# platform/values/kagent-values.yaml — kagent v0.9.3 chart values.
 #
-# Provider key is GeminiVertexAI (kagent v1alpha1 CRD enum; ADR-10).
-# Volume + volumeMount injection for the Vertex SA-key Secret is handled by
-# kagent-postrender.sh (Path B, ADR-9 v1.1) — chart 0.4.3 does not expose
-# app.volumes / app.volumeMounts at the values layer.
+# Top-level structure: `controller:` + `ui:` + `database:` + per-sub-chart enable
+# toggles. Vertex SA-key auth wires through native `controller.volumes` +
+# `controller.volumeMounts` + `controller.env` — no postRenderer required.
 #
-# Schema verified against kagent helm chart oci://ghcr.io/kagent-dev/kagent/helm/kagent:0.4.3
-#   templates/deployment.yaml appends .Values.app.env verbatim after chart defaults.
-providers:
-  default: geminiVertexAI
-  geminiVertexAI:
-    provider: GeminiVertexAI
-    model: "gemini-2.5-flash"
-    apiKeySecretRef: kagent-vertex-credentials
-    apiKeySecretKey: credentials.json
-    geminiVertexAI:
-      projectID: whisperops
-      location: us-central1
+# nginx timeouts: chart ships a native nginx.conf with `proxy_read_timeout 3600s`
+# on `/api/` and 600s on `/a2a/` — no override needed.
 
-app:
+# ── controller (Go reconciler + A2A server :8083) ─────────────────────────────
+controller:
+  replicas: 1
+  loglevel: info
+  watchNamespaces: []          # empty = watch all (whisperops scaffolds agent-* namespaces)
+  streaming:
+    timeout: 600s              # A2A streaming timeout — covers controller-to-sub-agent path
+  agentDeployment:
+    serviceAccountName: ""     # empty = let per-Agent CR set its own (ADR-P15)
+    podLabels:
+      whisperops/component: agent
   env:
     - name: GOOGLE_APPLICATION_CREDENTIALS
       value: /var/secrets/google/credentials.json
@@ -30,13 +27,50 @@ app:
       value: whisperops
     - name: GOOGLE_CLOUD_LOCATION
       value: us-central1
-    - name: AUTOGEN_DISABLE_RUNTIME_TRACING
-      value: "false"
     - name: OTEL_SERVICE_NAME
-      value: "kagent-app"
+      value: "kagent-controller"
     - name: OTEL_RESOURCE_ATTRIBUTES
       value: "service.namespace=kagent-system,deployment.environment=dev"
+  volumes:
+    - name: vertex-sa-key
+      secret:
+        secretName: kagent-vertex-credentials
+        defaultMode: 0400
+  volumeMounts:
+    - name: vertex-sa-key
+      mountPath: /var/secrets/google
+      readOnly: true
 
+# ── ui (Next.js + nginx) ──────────────────────────────────────────────────────
+ui:
+  replicas: 1
+  # ui.volumes is restricted to two emptyDir size limits (no arbitrary mounts).
+  volumes:
+    nextjsCache: 100Mi
+    tmp: 50Mi
+
+# ── database (bundled Postgres) ───────────────────────────────────────────────
+database:
+  bundled:
+    enabled: true
+    storage: 500Mi
+
+# ── providers (chart-default ModelConfig helper; chart-internal v1alpha1 naming) ──
+# Note: chart helper uses apiKeySecretRef (v1alpha1) here, NOT apiKeySecret (v1alpha2).
+# This is a chart-internal field, not a CR-author-facing one.
+# Per-agent ModelConfig CRs DO use the v1alpha2 `apiKeySecret` field.
+providers:
+  default: geminiVertexAI
+  geminiVertexAI:
+    provider: GeminiVertexAI
+    model: gemini-2.5-flash
+    apiKeySecretRef: kagent-vertex-credentials
+    apiKeySecretKey: credentials.json
+    config:
+      projectID: whisperops
+      location: us-central1
+
+# ── tracing (chart-native, no postRenderer needed) ────────────────────────────
 otel:
   tracing:
     enabled: true
@@ -46,23 +80,21 @@ otel:
         timeout: 15
         insecure: true
 
-argo-rollouts-agent:
-  enabled: false
-cilium-debug-agent:
-  enabled: false
-cilium-manager-agent:
-  enabled: false
-cilium-policy-agent:
-  enabled: false
-helm-agent:
-  enabled: false
-istio-agent:
-  enabled: false
-k8s-agent:
-  enabled: false
-kgateway-agent:
-  enabled: false
-observability-agent:
-  enabled: false
-promql-agent:
-  enabled: false
+# ── RBAC (cluster-scoped for agent-* namespaces) ──────────────────────────────
+rbac:
+  namespaces: []     # empty = cluster-scoped — required for the agent-<name>/ pattern
+
+# ── disable 10 bundled demo agents + chart-bundled MCP tools ──────────────────
+argo-rollouts-agent: { enabled: false }
+cilium-debug-agent:  { enabled: false }
+cilium-manager-agent: { enabled: false }
+cilium-policy-agent: { enabled: false }
+helm-agent:          { enabled: false }
+istio-agent:         { enabled: false }
+k8s-agent:           { enabled: false }
+kgateway-agent:      { enabled: false }
+observability-agent: { enabled: false }
+promql-agent:        { enabled: false }
+
+grafana-mcp: { enabled: false }
+querydoc:    { enabled: false }

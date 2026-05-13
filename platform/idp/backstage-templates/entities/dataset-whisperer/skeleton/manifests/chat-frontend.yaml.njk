@@ -7,7 +7,7 @@ metadata:
   name: chat-frontend-${{ values.agent_name }}
   namespace: agent-${{ values.agent_name }}
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
   labels:
     app: chat-frontend
     whisperops.io/agent: agent-${{ values.agent_name }}
@@ -39,7 +39,7 @@ spec:
               protocol: TCP
           env:
             - name: KAGENT_BASE_URL
-              value: "http://kagent.kagent-system.svc.cluster.local"
+              value: "http://kagent-controller.kagent-system.svc.cluster.local:8083"
             - name: AGENT_NAMESPACE
               value: "agent-${{ values.agent_name }}"
             - name: AGENT_NAME
@@ -82,7 +82,7 @@ metadata:
   name: chat-frontend-${{ values.agent_name }}
   namespace: agent-${{ values.agent_name }}
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
   labels:
     whisperops.io/agent: agent-${{ values.agent_name }}
 spec:

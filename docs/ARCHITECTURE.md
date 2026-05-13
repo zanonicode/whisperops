@@ -23,17 +23,20 @@ GCP PROJECT (Terraform-managed)
       IDP Layer (idpbuilder/CNOE, vendored)
         Backstage  ArgoCD  Gitea  Keycloak  ESO  cert-manager  NGINX-Ingress
       Application Platform Layer (helmfile + ArgoCD app-of-apps)
-        kagent (CRDs separate chart; Vertex SA key mounted via postRenderer)
+        kagent v0.9.x (CRDs separate chart; controller pod mounts Vertex SA key
+          natively via controller.volumes; postRenderer scope: UI nginx-timeout only)
         Crossplane (GCP family providers + ProviderConfig — split sync waves)
         Kyverno  Reflector  ar-pull-secret rotation  budget-controller
         LGTM-distributed (Loki + Mimir + Grafana)
         OTel Collector  tempo-mono (single-binary tracing backend)
       Per-Agent Layer (Backstage → Gitea → ArgoCD)
         namespace: agent-{name}
-          Planner / Analyst / Writer (kagent Agent CRs, Gemini 2.5 Flash via Vertex)
+          agent-prompts ConfigMap (planner.md / analyst.md / writer.md)
+          Planner / Analyst / Writer (kagent Agent CRs v1alpha2 Declarative,
+            each its own Deployment; A2A routing via controller :8083)
           Sandbox MCP (FastAPI + FastMCP)  Chat Frontend (Next.js)
           Crossplane: Bucket + ServiceAccount + ServiceAccountKey + IAM bindings
-          Kyverno namespaced policies  per-agent Ingress
+          Kyverno namespaced policies (allow-a2a NetworkPolicy :8083)  per-agent Ingress
 ```
 
 ## Component Responsibilities
@@ -45,7 +48,9 @@ Entry point for operators. The `dataset-whisperer` template renders Nunjucks ske
 The `root-app` Application is applied at the end of `_vm-bootstrap`. It watches `platform/argocd/applications/` in the in-cluster Gitea repo and instantiates child Applications for `crossplane-providers`, `crossplane-provider-config`, `budget-controller`, `kyverno-policies`, `observability`, `agent-prompts`, `platform-bootstrap-job`, `ar-pull-secret`, and `reflector`. Per-agent Applications are added when operators scaffold via Backstage.
 
 ### kagent
-Kubernetes-native LLM agent runtime. Manages `Agent`, `ModelConfig`, and `ToolServer` CRDs. The CRDs ship as a separate Helm chart (`kagent-crds`) installed first via helmfile `needs:` ordering so the main `kagent` chart can register CRs without a CRD-establish race.
+Kubernetes-native LLM agent runtime. Manages `Agent`, `ModelConfig`, and `ToolServer` CRDs at `kagent.dev/v1alpha2` (stored version; v1alpha1 still served via conversion webhook). The CRDs ship as a separate Helm chart (`kagent-crds`) installed first via helmfile `needs:` ordering so the main `kagent` chart can register CRs without a CRD-establish race.
+
+In v0.9.x, each Agent CR scaffolds its own Kubernetes Deployment + Service. The three agent roles (planner/analyst/writer) run as separate pods communicating over native A2A HTTP through the kagent-controller at port 8083. System prompts are stored in a per-agent-namespace `agent-prompts` ConfigMap (keys: `planner.md`, `analyst.md`, `writer.md`) referenced by `spec.declarative.systemMessageFrom`.
 
 ### Sandbox MCP (per agent)
 One FastAPI Deployment per `agent-{name}` namespace running an MCP server over streamable-HTTP. Exposes a single tool (`execute_python_<agent>` — namespaced per-agent because kagent's tool registry has a global UNIQUE constraint on `tool.name`). Enforces: 60s subprocess timeout, 4 Gi memory limit (`setrlimit RLIMIT_AS`), read-only root filesystem, NetworkPolicy egress restricted to GCS + DNS + the in-cluster OTel collector. Mounts the agent's GCP SA key from the namespace's `gcp-sa-key` Secret — no per-call credential passing.
@@ -77,7 +82,7 @@ A one-shot Kubernetes Job intended to populate dataset profile JSON in Supabase 
 1. Operator submits the Backstage form (4 visible fields) → scaffolder task created.
 2. Nunjucks skeleton files rendered with sed-baked `base_domain` + `project_id` → committed to Gitea repo `whisperops/agent-{name}/`.
 3. The repo's ArgoCD Application detects the new path → syncs from `manifests/` subfolder.
-4. Sync wave order: Namespace → Crossplane resources (Bucket + SA + Key + IAMMember) → kagent ModelConfig + Agent CRs (planner/analyst/writer with `a2aConfig.skills`) → Sandbox + Chat Frontend Deployments + Service + Ingress.
+4. Sync wave order: Namespace → `agent-prompts` ConfigMap (wave 0) → Crossplane resources (Bucket + SA + Key + IAMMember) → kagent ModelConfig (wave 1) + Agent CRs (planner/analyst/writer v1alpha2 Declarative, wave 2) + Kyverno Policy (wave 2, generates `allow-a2a` NetworkPolicy for :8083) → Sandbox + Chat Frontend Deployments + Service + Ingress.
 5. Reflector replicates `ar-pull-secret`, `langfuse-credentials`, and `kagent-vertex-credentials` into the new namespace within seconds.
 6. cert-manager issues TLS for `agent-{name}.{vm-ip}.sslip.io` → chat UI is live.
 
@@ -85,11 +90,11 @@ A one-shot Kubernetes Job intended to populate dataset profile JSON in Supabase 
 
 1. User types question → browser opens SSE to chat-frontend `/api/chat`.
 2. Route handler creates a kagent session via `POST /api/sessions`, then invokes the planner via `POST /api/sessions/{id}/invoke/stream`.
-3. Planner (Gemini 2.5 Flash via Vertex AI) orchestrates: calls Analyst as an A2A tool, passes the result to Writer.
+3. Planner (Gemini 2.5 Flash via Vertex AI, kagent Agent CR v1alpha2 Declarative) orchestrates via native A2A: sends an A2A request through kagent-controller :8083 to the Analyst pod, then similarly to the Writer pod.
 4. Analyst calls the Sandbox MCP `execute_python_<agent>` tool. Sandbox subprocess loads the dataset CSV from `gs://whisperops-datasets/`, runs the user code with `pd`/`np`/`plt`/`df` pre-loaded, uploads any chart PNGs to `gs://agent-{name}/charts/`, returns `{stdout, signed_chart_url, error?}`.
 5. Writer composes markdown prose with chart embeds and code blocks, streams tokens back via SSE.
 6. Browser renders tokens incrementally; charts render inline.
-7. The OTel Collector dual-exports the trace (3 A2A spans — Planner, Analyst, Writer) to both Tempo (queryable via Grafana TraceQL) and Langfuse Cloud (cost rollup view).
+7. The OTel Collector dual-exports the trace to both Tempo (queryable via Grafana TraceQL) and Langfuse Cloud (cost rollup view). The trace hierarchy includes `a2a.request` spans propagated via W3C `traceparent` across pod boundaries: `planner.invoke → a2a.request → analyst.handle → analyst.llm.call → a2a.request → writer.handle → writer.llm.call`.
 
 ## Security Controls
 

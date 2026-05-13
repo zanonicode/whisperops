@@ -2,10 +2,10 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 6.0"
+      version = "~> 7.0"
     }
   }
-  required_version = ">= 1.7"
+  required_version = ">= 1.15"
 }
 
 provider "google" {
@@ -18,6 +18,33 @@ locals {
     project    = var.project_id
     managed_by = "terraform"
   }
+
+  required_apis = toset([
+    "compute.googleapis.com",
+    "storage.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "aiplatform.googleapis.com",
+  ])
+}
+
+###############################################################################
+# Project Services: GCP APIs required by the platform
+#
+# Bootstrap APIs (serviceusage, cloudresourcemanager) are NOT managed here —
+# Terraform itself depends on them to call ServiceUsage / Resource Manager;
+# enabling them via TF would be a chicken-and-egg. They are checked by
+# `make preflight` and must be enabled manually on first project setup.
+###############################################################################
+
+resource "google_project_service" "platform_apis" {
+  for_each = local.required_apis
+
+  project = var.project_id
+  service = each.value
+
+  disable_on_destroy = false
 }
 
 ###############################################################################
@@ -140,11 +167,26 @@ resource "google_project_iam_member" "bootstrap_project_iam_admin" {
 ###############################################################################
 
 module "artifact_registry" {
-  source = "./modules/artifact_registry"
+  source  = "GoogleCloudPlatform/artifact-registry/google"
+  version = "~> 0.8.0"
 
-  project_id = var.project_id
-  region     = var.region
-  labels     = local.common_labels
+  project_id    = var.project_id
+  location      = var.region
+  format        = "DOCKER"
+  repository_id = "whisperops-images"
+  description   = "Docker images for the whisperops platform (sandbox, chat-frontend, platform-bootstrap, budget-controller)."
+  labels        = local.common_labels
+
+  cleanup_policies = {
+    "keep-latest-10" = {
+      action = "KEEP"
+      most_recent_versions = {
+        keep_count = 10
+      }
+    }
+  }
+
+  depends_on = [google_project_service.platform_apis]
 }
 
 # Grant the bootstrap SA write access to the AR repo so CI/CD and manual
@@ -267,20 +309,13 @@ data "google_compute_instance" "vm" {
 # per-agent GCS SAs (provisioned by Crossplane) are unchanged.
 ###############################################################################
 
-resource "google_project_service" "aiplatform" {
-  project = var.project_id
-  service = "aiplatform.googleapis.com"
-
-  disable_on_destroy = false
-}
-
 resource "google_service_account" "kagent_vertex" {
   project      = var.project_id
   account_id   = "whisperops-kagent-vertex"
   display_name = "whisperops kagent → Vertex AI inference"
   description  = "Inference-only SA for Gemini 2.5 Flash calls. Mounted as JSON-key Secret in kagent-system."
 
-  depends_on = [google_project_service.aiplatform]
+  depends_on = [google_project_service.platform_apis]
 }
 
 resource "google_project_iam_member" "kagent_vertex_user" {

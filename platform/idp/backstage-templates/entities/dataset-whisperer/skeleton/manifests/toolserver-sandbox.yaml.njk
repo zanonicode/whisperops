@@ -1,5 +1,5 @@
-apiVersion: kagent.dev/v1alpha1
-kind: ToolServer
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
 metadata:
   name: sandbox
   namespace: agent-${{ values.agent_name }}
@@ -7,6 +7,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   description: "Sandboxed Python code execution service for Dataset Whisperer"
-  config:
-    streamableHttp:
-      url: http://sandbox.agent-${{ values.agent_name }}.svc.cluster.local:8080/mcp
+  url: http://sandbox.agent-${{ values.agent_name }}.svc.cluster.local:8080/mcp
+  protocol: STREAMABLE_HTTP
+  timeout: 30s
+  terminateOnClose: true

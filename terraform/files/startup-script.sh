@@ -60,7 +60,11 @@ rm /tmp/kubectl
 # _vm-bootstrap calls helmfile + sops; bake them into the startup-script so the
 # operator never has to install them by hand.
 log "Installing helm"
-curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+# Pin to a specific version for reproducibility.
+HELM_VERSION="3.20.2"
+curl -fsSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz" \
+    | tar -xz -C /tmp \
+    && install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
 
 log "Installing helmfile"
 # Pin the version: resolving the latest tag via
@@ -69,27 +73,27 @@ log "Installing helmfile"
 # still writing, the pipeline inherits curl's SIGPIPE exit (23), and `set -e`
 # aborts the whole script. Pinning is faster (no API call), reproducible, and
 # avoids the race entirely.
-HELMFILE_VERSION="1.5.0"
+HELMFILE_VERSION="1.1.1"
 curl -fsSL "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C /usr/local/bin helmfile
 chmod +x /usr/local/bin/helmfile
 
 log "Installing sops"
 # Same SIGPIPE risk as helmfile above — pin to a known-good version.
-SOPS_VERSION="3.12.2"
+SOPS_VERSION="3.13.0"
 curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
     -o /usr/local/bin/sops
 chmod +x /usr/local/bin/sops
 
 log "Installing yq"
-# Required by the kagent helmfile postRenderer that strips a duplicated
-# AUTOGEN_DISABLE_RUNTIME_TRACING env entry. Without yq on PATH, the
+# Required by the kagent helmfile postRenderer to inject the nginx-timeout
+# ConfigMap mount on the kagent-ui Deployment. Without yq on PATH, the
 # postRenderer fails silently during `helmfile apply`, helmfile records kagent
 # as "deployed" in its state but the actual helm install never runs — cluster
 # ends up with zero kagent pods, zero kagent.dev CRDs. Helmfile `wait: true`
 # does NOT catch this because the postRenderer returns 0 even when yq is
 # missing.
-YQ_VERSION="4.45.1"
+YQ_VERSION="4.52.4"
 curl -fsSL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
     -o /usr/local/bin/yq
 chmod +x /usr/local/bin/yq
@@ -100,7 +104,10 @@ log "Installing helm-diff plugin to /usr/local/share/helm/plugins (system-wide, 
 # helmfile actually runs as. The Makefile sets
 # HELM_PLUGINS=/usr/local/share/helm/plugins to point helm at this location.
 mkdir -p /usr/local/share/helm/plugins
-HELM_DATA_HOME=/usr/local/share/helm helm plugin install https://github.com/databus23/helm-diff 2>&1 || \
+# Pin helm-diff to a version known compatible with the pinned helm above —
+# floating master broke on helm 3.17.3 with "unknown field platformHooks".
+HELM_DIFF_VERSION="3.15.6"
+HELM_DATA_HOME=/usr/local/share/helm helm plugin install https://github.com/databus23/helm-diff --version "v${HELM_DIFF_VERSION}" 2>&1 || \
     log "  helm-diff plugin already installed or failed (non-fatal)"
 chmod -R a+rx /usr/local/share/helm/plugins
 

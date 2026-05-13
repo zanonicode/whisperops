@@ -10,6 +10,7 @@
 | LLM cost runaway | Medium | Medium | budget-controller scales agent Deployments to 0 at 100% spend; per-namespace `whisperops.io/budget-usd` annotation required |
 | Privileged container escape | Low | Critical | Pod specs declare `privileged: false`, `allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]` |
 | Untrusted image supply chain | Low | High | Per-namespace Kyverno policy allowlist for image registries (currently the namespaced `agent-egress-policy` is enforced; broader cluster-wide policies are in the internal backlog) |
+| Cross-agent A2A traffic interception | Low | Medium | A2A flows through kagent-controller :8083 on the cluster pod network; the `allow-a2a` NetworkPolicy generated per-namespace permits cluster pod-CIDR egress on :8083. Controller is the sole listener. Narrowing via pod label selectors is tracked in PENDING.B5. |
 | SOPS key compromise | Low | Critical | Age key not committed (gitignored); rotate via `age-keygen` + `sops updatekeys` |
 | Bootstrap SA key compromise | Low | High | Key generated fresh per deploy by `make gcp-bootstrap-key`; ephemeral; no stored encrypted copy can leak |
 | Vertex SA key compromise | Low | Medium | Key generated fresh per deploy by `make kagent-vertex-key`; ephemeral; no stored encrypted copy can leak. SA has `roles/aiplatform.user` only — cannot access storage, IAM, or other GCP surfaces |

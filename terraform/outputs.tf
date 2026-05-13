@@ -20,5 +20,5 @@ output "kubeconfig_path" {
 
 output "registry_url" {
   description = "Base URL for the whisperops-images Artifact Registry repository."
-  value       = module.artifact_registry.registry_url
+  value       = "${var.region}-docker.pkg.dev/${var.project_id}/whisperops-images"
 }

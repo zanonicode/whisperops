@@ -1,4 +1,4 @@
-apiVersion: kagent.dev/v1alpha1
+apiVersion: kagent.dev/v1alpha2
 kind: ModelConfig
 metadata:
   name: model
@@ -8,7 +8,7 @@ metadata:
 spec:
   provider: GeminiVertexAI
   model: gemini-2.5-flash
-  apiKeySecretRef: kagent-vertex-credentials
+  apiKeySecret: kagent-vertex-credentials
   apiKeySecretKey: credentials.json
   geminiVertexAI:
     projectID: ${{ values.project_id }}

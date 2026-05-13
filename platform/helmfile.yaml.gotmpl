@@ -24,13 +24,13 @@ releases:
     namespace: crossplane-system
     createNamespace: true
     chart: crossplane-stable/crossplane
-    version: "1.17.1"
+    version: "2.2.1"
 
   - name: kyverno
     namespace: kyverno
     createNamespace: true
     chart: kyverno/kyverno
-    version: "3.2.6"
+    version: "3.8.0"
     # Cleanup CronJobs reference an upstream-removed image tag. See
     # platform/observability/kyverno-values.yaml header for context.
     values:
@@ -40,7 +40,7 @@ releases:
     namespace: observability
     createNamespace: true
     chart: grafana/lgtm-distributed
-    version: "2.1.0"
+    version: "3.0.1"
     values:
       - /tmp/whisperops/platform/observability/lgtm-values.yaml
 
@@ -48,7 +48,7 @@ releases:
     namespace: observability
     createNamespace: true
     chart: open-telemetry/opentelemetry-collector
-    version: "0.104.0"
+    version: "0.140.0"
     needs:
       - observability/lgtm-distributed
     values:
@@ -64,7 +64,7 @@ releases:
     namespace: kagent-system
     createNamespace: true
     chart: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds
-    version: "0.4.3"
+    version: "0.9.3"
     wait: true
     timeout: 120
 
@@ -72,26 +72,9 @@ releases:
     namespace: kagent-system
     createNamespace: true
     chart: oci://ghcr.io/kagent-dev/kagent/helm/kagent
-    version: "0.4.3"
+    version: "0.9.3"
     needs:
       - kagent-system/kagent-crds
-    hooks:
-      - events: ["presync"]
-        showlogs: true
-        command: bash
-        args:
-          - -c
-          - |
-            # The kagent chart hardcodes namespace: kagent on the grafana ToolServer
-            # (templates/toolserver-grafana.yaml). That namespace must exist before
-            # helm install attempts to create the resource or the install fails with
-            # "namespaces kagent not found". kubectl apply is idempotent on re-deploy.
-            sudo kubectl create namespace kagent --dry-run=client -o yaml | sudo kubectl apply -f -
-    # The Secret `kagent-vertex-credentials` must exist in kagent-system
-    # before this release reconciles. `make kagent-vertex-key` (invoked by
-    # `make deploy` between gcp-bootstrap-key and build-images) generates a
-    # fresh Vertex SA JSON key and applies it as a Secret with Reflector
-    # annotations so agent-* namespaces receive copies automatically.
     # `wait: true` ensures helmfile blocks until the install fully completes.
     # Without it, helmfile may cache "deployed" even when the OCI pull failed
     # or the install rolled back silently. Timeout matches the kagent nginx
@@ -100,14 +83,6 @@ releases:
     timeout: 600
     values:
       - /tmp/whisperops/platform/values/kagent-values.yaml
-    # postRenderer injects the Vertex SA-key volume + mount on the kagent
-    # Deployment (chart 0.4.3 does not expose app.volumes / app.volumeMounts
-    # at the values layer — ADR-9 v1.1) and also restores the kagent UI nginx
-    # proxy_read_timeout: 600s via ConfigMap volume. Uses ruamel.yaml
-    # round-trip parser (never raw sed/regex — see CLAUDE.md gotcha #9).
-    postRenderer: bash
-    postRendererArgs:
-      - /tmp/whisperops/platform/values/kagent-postrender.sh
 
   # Reflector mirrors ar-pull-secret (crossplane-system) to all agent-*
   # namespaces automatically. Must be up before the first agent scaffold.
@@ -115,6 +90,6 @@ releases:
     namespace: reflector-system
     createNamespace: true
     chart: emberstack/reflector
-    version: "7.1.288"
+    version: "10.0.41"
     wait: true
     timeout: 120
