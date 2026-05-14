@@ -76,11 +76,27 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
+
+# Vercel-style colorway: 10 diverse hues so multi-trace charts read as
+# distinct categories. For continuous color mapping, the template's default
+# colorscale is Viridis (purple → teal → yellow) which is colorblind-safe
+# and visually rich.
+_WHISPEROPS_COLORWAY = [
+    "#0070f3", "#34d399", "#a78bfa", "#f97316", "#ec4899",
+    "#facc15", "#22d3ee", "#f472b6", "#10b981", "#f59e0b",
+]
+
 pio.templates["whisperops_vercel"] = go.layout.Template(
     layout=go.Layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        colorway=["#0070f3","#34d399","#a78bfa","#f97316","#ec4899","#facc15","#22d3ee","#f472b6"],
+        colorway=_WHISPEROPS_COLORWAY,
+        colorscale=dict(
+            sequential="Viridis",
+            sequentialminus="Plasma",
+            diverging="RdBu_r",
+        ),
+        coloraxis=dict(colorscale="Viridis"),
         font=dict(family="Geist Sans, ui-sans-serif, system-ui, sans-serif", color="#e4e4e7", size=13),
         title=dict(font=dict(family="Geist Sans, ui-sans-serif, system-ui, sans-serif", color="#f4f4f5", size=15), x=0.01, xanchor="left"),
         xaxis=dict(gridcolor="#333", linecolor="#444", tickcolor="#444", zerolinecolor="#444", tickfont=dict(color="#a1a1aa")),
@@ -158,7 +174,18 @@ def _upload_charts(tmp_dir: Path) -> list[str]:
             blob = bucket.blob(blob_name)
             blob.upload_from_filename(str(art), content_type=content_type)
             try:
-                signed = blob.generate_signed_url(version="v4", expiration=3600)
+                # 7-day TTL: long enough that no realistic chat session
+                # outlives the URL. Charts are derived from public datasets
+                # (no PII), in a per-agent bucket; the signed URL grants
+                # only read access to that one object — so a 7-day window
+                # is an acceptable trade-off for eliminating the "chart
+                # expired mid-conversation" UX bug. Per-blob UUID prefix
+                # ensures every turn gets a fresh URL — the worker model
+                # cannot "memorize" and reuse a URL from a prior turn
+                # because the URL didn't exist until this turn.
+                signed = blob.generate_signed_url(
+                    version="v4", expiration=604800
+                )
                 urls.append(signed)
             except Exception as exc:
                 logger.warning("signed-URL failed (%s); falling back to gs:// path", exc)
@@ -266,12 +293,20 @@ def execute_python(code: str) -> str:
                 span.set_attribute("charts.uploaded", len(chart_urls))
 
             return _format_result(
-                proc.stdout, proc.stderr, proc.returncode, error=None, chart_urls=chart_urls
+                proc.stdout,
+                proc.stderr,
+                proc.returncode,
+                error=None,
+                chart_urls=chart_urls,
             )
 
 
 def _format_result(
-    stdout: str, stderr: str, exit_code: int, error: str | None, chart_urls: list[str]
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    error: str | None,
+    chart_urls: list[str],
 ) -> str:
     parts: list[str] = []
     if stdout:
@@ -281,7 +316,17 @@ def _format_result(
     if error:
         parts.append(f"ERROR: {error}")
     parts.append(f"exit_code: {exit_code}")
+
+    # Signed URLs (7-day TTL) are THE chart transport. Each URL has a
+    # fresh per-turn UUID, so the worker model cannot reuse a URL from
+    # a prior turn. The worker MUST embed each URL in its reply using
+    # standard markdown image syntax: `![chart](<url>)`. The chat UI's
+    # ImageDispatcher routes any `.json` URL to the PlotlyChart
+    # component which fetches and renders the Plotly figure.
     if chart_urls:
-        md = "\n".join(f"![chart {i+1}]({u})" for i, u in enumerate(chart_urls))
-        parts.append(f"CHARTS:\n{md}")
+        md = "\n".join(
+            f"![chart {i+1}]({u})" for i, u in enumerate(chart_urls)
+        )
+        parts.append(f"CHARTS (embed each line verbatim in your reply):\n{md}")
+
     return "\n\n".join(parts)

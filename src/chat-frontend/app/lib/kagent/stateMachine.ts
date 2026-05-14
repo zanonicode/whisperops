@@ -8,7 +8,7 @@ function extractSubAgentFromCalls(parts: MessagePart[] | undefined): string | un
     const name = (p.data as { name?: unknown })?.name;
     if (typeof name !== 'string') continue;
     const m = name.match(/__NS__(.+)$/);
-    if (m && (m[1] === 'analyst' || m[1] === 'writer')) return m[1];
+    if (m && m[1] === 'worker') return m[1];
   }
   return undefined;
 }

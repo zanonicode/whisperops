@@ -1,16 +1,16 @@
 apiVersion: kagent.dev/v1alpha2
 kind: Agent
 metadata:
-  name: analyst
+  name: worker
   namespace: agent-${{ values.agent_name }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"
     whisperops.io/budget-usd: "${{ values.budget_usd }}"
-    whisperops.io/role: analyst
+    whisperops.io/role: worker
     whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
   type: Declarative
-  description: "Dataset Whisperer analyst — runs Python in the per-agent sandbox to answer numerical questions about ${{ values.dataset_id }}."
+  description: "Dataset Whisperer worker — answers analytical questions about ${{ values.dataset_id }} by running Python in the per-agent sandbox AND composing the final verbose teaching response in one pass."
   sandbox:
     network:
       allowedDomains:
@@ -21,7 +21,7 @@ spec:
     systemMessageFrom:
       type: ConfigMap
       name: agent-prompts
-      key: analyst.md
+      key: worker.md
     tools:
       - type: McpServer
         mcpServer:
@@ -32,15 +32,18 @@ spec:
             - execute_python_${{ values.agent_name | replace("-", "_") }}
     a2aConfig:
       skills:
-        - id: dataset-analysis
-          name: Dataset Analysis
+        - id: dataset-analysis-and-response
+          name: Dataset Analysis and Teaching Response
           description: Compute statistics, aggregates, and produce charts from the
-            ${{ values.dataset_id }} dataset by running Python in the sandbox.
+            ${{ values.dataset_id }} dataset, then compose the final verbose
+            teaching response with embedded chart, suggestions, and code.
           tags:
             - analysis
             - python
+            - teaching
             - ${{ values.dataset_id }}
           examples:
             - "What is the median of column X?"
             - "Plot the distribution of Y."
+            - "Anything interesting in this dataset?"
             - "Group by Z and compute the mean of W."

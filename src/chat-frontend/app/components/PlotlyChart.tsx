@@ -25,12 +25,50 @@ type PlotlyFigure = {
 
 type ErrorKind = 'expired' | 'parse' | 'fetch' | null;
 
-export function PlotlyChart({ url }: { url: string }) {
+interface PlotlyChartProps {
+  // Legacy network path (kept as a fallback) — the chart JSON is fetched
+  // from a signed GCS URL. Subject to TTL expiration and worker URL-reuse
+  // bugs; prefer `inlineJson`.
+  url?: string;
+  // Preferred path: chart JSON arrives inline in the SSE stream as the
+  // raw stringified Plotly figure. No fetch, no TTL, no expiration class.
+  inlineJson?: string;
+}
+
+export function PlotlyChart({ url, inlineJson }: PlotlyChartProps) {
   const [fig, setFig] = useState<PlotlyFigure | null>(null);
   const [err, setErr] = useState<ErrorKind>(null);
+  const [errDetail, setErrDetail] = useState<string>('');
 
   useEffect(() => {
     let cancelled = false;
+
+    // Inline JSON path (preferred) — synchronous parse, no network.
+    if (inlineJson) {
+      try {
+        const json = JSON.parse(inlineJson) as PlotlyFigure;
+        if (!cancelled) setFig(json);
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : 'parse error';
+        const sample = inlineJson.slice(0, 80);
+        if (!cancelled) {
+          setErrDetail(`${detail} — first 80 chars: ${sample}`);
+          setErr('parse');
+        }
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    // Legacy network path.
+    if (!url) {
+      setErrDetail('No chart payload (neither inline JSON nor URL).');
+      setErr('parse');
+      return () => {
+        cancelled = true;
+      };
+    }
 
     (async () => {
       try {
@@ -53,7 +91,7 @@ export function PlotlyChart({ url }: { url: string }) {
     return () => {
       cancelled = true;
     };
-  }, [url]);
+  }, [url, inlineJson]);
 
   if (err === 'expired') {
     return (
@@ -72,10 +110,15 @@ export function PlotlyChart({ url }: { url: string }) {
         className="my-3 rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm text-red-300"
         role="alert"
       >
-        Failed to load chart.{' '}
-        <a href={url} className="underline" target="_blank" rel="noreferrer">
-          Open raw
-        </a>
+        <div>Failed to load chart.</div>
+        {errDetail && (
+          <div className="mt-1 font-mono text-xs opacity-80">{errDetail}</div>
+        )}
+        {url && (
+          <a href={url} className="underline mt-1 inline-block" target="_blank" rel="noreferrer">
+            Open raw
+          </a>
+        )}
       </div>
     );
   }

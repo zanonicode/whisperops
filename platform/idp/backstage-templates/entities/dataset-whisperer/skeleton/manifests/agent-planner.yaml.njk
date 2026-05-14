@@ -10,7 +10,7 @@ metadata:
     whisperops.io/dataset: "${{ values.dataset_id }}"
 spec:
   type: Declarative
-  description: "Dataset Whisperer orchestrator — routes user questions to Analyst (compute) and Writer (prose) via native A2A."
+  description: "Dataset Whisperer router — classifies user messages and routes analytical questions to the Worker. Handles conversational replies (greetings, off-topic, meta-questions) directly."
   sandbox:
     network:
       allowedDomains:
@@ -27,23 +27,20 @@ spec:
         agent:
           apiGroup: kagent.dev
           kind: Agent
-          name: analyst
-          namespace: agent-${{ values.agent_name }}
-      - type: Agent
-        agent:
-          apiGroup: kagent.dev
-          kind: Agent
-          name: writer
+          name: worker
           namespace: agent-${{ values.agent_name }}
     a2aConfig:
       skills:
         - id: dataset-question-orchestration
-          name: Dataset Question Orchestration
-          description: Route user questions about ${{ values.dataset_id }} through analyst (compute) and writer (prose).
+          name: Dataset Question Routing
+          description: Classify and route user questions about ${{ values.dataset_id }}. Forward analytical questions to the worker; handle greetings, off-topic, and meta-questions directly.
           tags:
             - orchestration
+            - routing
             - ${{ values.dataset_id }}
           examples:
             - "What is the median of column X?"
             - "How many records are there?"
             - "Plot the distribution of Y."
+            - "Hi, what can you do?"
+            - "What did I ask first in this conversation?"

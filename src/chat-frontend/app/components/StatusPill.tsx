@@ -6,14 +6,12 @@ import { cn } from '@/lib/cn';
 
 const LABELS: Record<string, string> = {
   planner: 'Planner thinking…',
-  analyst: 'Analyst computing…',
-  writer: 'Writer drafting…',
+  worker: 'Worker analysing…',
 };
 
 const DOT_CLASS: Record<string, string> = {
   planner: 'bg-accent',
-  analyst: 'bg-emerald-400',
-  writer: 'bg-fuchsia-400',
+  worker: 'bg-emerald-400',
 };
 
 interface StatusPillProps {

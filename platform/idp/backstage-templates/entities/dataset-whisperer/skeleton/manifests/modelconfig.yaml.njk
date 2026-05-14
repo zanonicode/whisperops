@@ -1,10 +1,27 @@
-# Single model for all three agents — Pro everywhere.
-# BRAINSTORM D7 reserved the Pro escalation if Flash reliability failed BUILD
-# validation. It did (~80% malformed function_call rate on simple aggregations).
-# After consolidating: planner+analyst+writer all use Pro. Cost ~10x Flash but
-# acceptable for POC; the function_call reliability + better prose quality
-# justifies it across the chain. To revert to mixed-tier, split into `model`
-# (Flash) + `model-pro` (Pro) and point only the analyst at `model-pro`.
+# Single ModelConfig (Gemini 2.5 Pro) for both planner and worker.
+#
+# Why Pro for both, not split Flash/Pro:
+# Initial design split planner=Flash (cheap routing) and worker=Pro
+# (prose). Flash on the planner kept emitting malformed function_calls
+# (literal `print(f"...")` Python pseudo-code instead of a structured
+# tool invocation to `worker`). Even with a single-target function_call
+# shape (planner only ever calls worker), Flash's code-leakage pattern
+# is unreliable for production tool routing.
+#
+# Pro 2.5 trade-offs accepted:
+# - Higher per-token cost (~30× Flash at our POC scale = still <$50/mo)
+# - Stochastic thought_signature emissions that occasionally close the
+#   SSE without `final:true` — MITIGATED by the chat-frontend useChatStream
+#   one-shot transparent retry (RETRYABLE_ERROR_PATTERNS).
+#
+# The cost-optimization that motivated the split (cheap classifier for
+# hellos/off-topic) was not worth the function-call malformation risk
+# that broke A2A delegation.
+#
+# A `model-planner` ModelConfig is no longer maintained in this skeleton.
+# To re-split later (e.g. when Gemini 3 Flash ships with better
+# function-call discipline), add a second ModelConfig CR below and point
+# agent-planner.yaml.njk at it.
 apiVersion: kagent.dev/v1alpha2
 kind: ModelConfig
 metadata:
@@ -20,5 +37,9 @@ spec:
   geminiVertexAI:
     projectID: ${{ values.project_id }}
     location: us-central1
-    maxOutputTokens: 4096
+    # 16K accommodates verbose teaching prose (~500 words) + tables + the
+    # inline plotly-json chart fence (charts are ~2-3K tokens each, up to
+    # ~6K for scatter plots with many points). 4K was too tight and
+    # truncated responses mid-chart-embed.
+    maxOutputTokens: 16384
     temperature: "0"

@@ -34,6 +34,22 @@ interface ServerEvent {
   usage?: Record<string, number>;
 }
 
+type StreamOutcome =
+  | { kind: 'success'; contextId?: string }
+  | { kind: 'retryable'; contextId?: string }
+  | { kind: 'fatal'; message: string; contextId?: string };
+
+// Errors that warrant a transparent one-shot retry. These are upstream-side
+// stochastic failures where re-sending the same message often succeeds — the
+// canonical case is kagent v0.9.x's ADK closing the SSE without emitting a
+// terminal `final:true` after Gemini emits a part the part_converter rejects.
+const RETRYABLE_ERROR_PATTERNS = ['stream closed without terminal signal'];
+
+function isRetryableError(message: string | undefined): boolean {
+  if (!message) return false;
+  return RETRYABLE_ERROR_PATTERNS.some((p) => message.includes(p));
+}
+
 export function useChatStream(): UseChatStreamReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -78,25 +94,16 @@ export function useChatStream(): UseChatStreamReturn {
     }
   }, []);
 
-  const sendRequest = useCallback(
-    async (text: string, contextId?: string): Promise<{ contextId?: string }> => {
-      if (isStreaming) return {};
-
+  const attemptStream = useCallback(
+    async (
+      text: string,
+      contextId: string | undefined,
+      asstMsgId: string,
+      isRetry: boolean,
+    ): Promise<StreamOutcome> => {
       streamClosedRef.current = false;
       textBufRef.current = '';
       artifactBufRef.current = '';
-
-      const userMsgId = newId();
-      const asstMsgId = newId();
-      activeIdRef.current = asstMsgId;
-
-      setMessages((prev) => [
-        ...prev,
-        { id: userMsgId, role: 'user', text, status: 'completed' },
-        { id: asstMsgId, role: 'assistant', text: '', status: 'pending' },
-      ]);
-      setIsStreaming(true);
-      setStreamingAuthor(null);
 
       let resolvedContextId: string | undefined;
 
@@ -108,7 +115,7 @@ export function useChatStream(): UseChatStreamReturn {
         });
 
         if (!res.ok || !res.body) {
-          throw new Error(`HTTP ${res.status}`);
+          return { kind: 'fatal', message: `HTTP ${res.status}` };
         }
 
         setMessages((prev) =>
@@ -122,6 +129,8 @@ export function useChatStream(): UseChatStreamReturn {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
+        let retryableErrorSeen = false;
+        let fatalMessage: string | undefined;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -203,14 +212,25 @@ export function useChatStream(): UseChatStreamReturn {
                       setStreamingAuthor(null);
                     }
                   } else if (eventType === 'error') {
-                    stopFlush();
-                    setMessages((prev) =>
-                      prev.map((m) =>
-                        m.id === asstMsgId
-                          ? { ...m, text: evt.message ?? 'An error occurred.', status: 'failed' }
-                          : m
-                      )
-                    );
+                    if (!isRetry && isRetryableError(evt.message)) {
+                      retryableErrorSeen = true;
+                      // Don't write the error into the message — caller will retry.
+                      // Reset partial buffers so the retry starts clean.
+                      stopFlush();
+                      textBufRef.current = '';
+                      artifactBufRef.current = '';
+                      setStreamingAuthor(null);
+                    } else {
+                      fatalMessage = evt.message ?? 'An error occurred.';
+                      stopFlush();
+                      setMessages((prev) =>
+                        prev.map((m) =>
+                          m.id === asstMsgId
+                            ? { ...m, text: fatalMessage ?? '', status: 'failed' }
+                            : m
+                        )
+                      );
+                    }
                   }
                 } catch {
                   // Ignore malformed event lines
@@ -220,17 +240,41 @@ export function useChatStream(): UseChatStreamReturn {
           }
         }
 
-        if (!streamClosedRef.current) {
-          stopFlush();
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === asstMsgId && m.status === 'streaming'
-                ? { ...m, status: 'failed', text: m.text + textBufRef.current }
-                : m
-            )
-          );
-          textBufRef.current = '';
+        if (retryableErrorSeen) {
+          return { kind: 'retryable', contextId: resolvedContextId };
         }
+
+        if (fatalMessage) {
+          return { kind: 'fatal', message: fatalMessage, contextId: resolvedContextId };
+        }
+
+        if (streamClosedRef.current) {
+          return { kind: 'success', contextId: resolvedContextId };
+        }
+
+        // Upstream closed without a terminal event and without an error event.
+        // Treat as retryable on first attempt (same recovery as the named
+        // "stream closed without terminal signal" error) — flush partial text
+        // so the user sees progress on the failed message if we don't retry.
+        stopFlush();
+        if (!isRetry) {
+          textBufRef.current = '';
+          artifactBufRef.current = '';
+          return { kind: 'retryable', contextId: resolvedContextId };
+        }
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === asstMsgId && m.status === 'streaming'
+              ? { ...m, status: 'failed', text: m.text + textBufRef.current }
+              : m
+          )
+        );
+        textBufRef.current = '';
+        return {
+          kind: 'fatal',
+          message: 'Connection closed unexpectedly',
+          contextId: resolvedContextId,
+        };
       } catch (err) {
         stopFlush();
         const message = err instanceof Error ? err.message : 'Connection error';
@@ -239,6 +283,45 @@ export function useChatStream(): UseChatStreamReturn {
             m.id === asstMsgId ? { ...m, text: message, status: 'failed' } : m
           )
         );
+        return { kind: 'fatal', message, contextId: resolvedContextId };
+      }
+    },
+    [scheduleFlush, stopFlush],
+  );
+
+  const sendRequest = useCallback(
+    async (text: string, contextId?: string): Promise<{ contextId?: string }> => {
+      if (isStreaming) return {};
+
+      const userMsgId = newId();
+      const asstMsgId = newId();
+      activeIdRef.current = asstMsgId;
+
+      setMessages((prev) => [
+        ...prev,
+        { id: userMsgId, role: 'user', text, status: 'completed' },
+        { id: asstMsgId, role: 'assistant', text: '', status: 'pending' },
+      ]);
+      setIsStreaming(true);
+      setStreamingAuthor(null);
+
+      let outcome: StreamOutcome = { kind: 'fatal', message: 'init' };
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (attempt > 0) {
+            // Retry: reset the assistant message to a clean pending state.
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === asstMsgId
+                  ? { ...m, text: '', status: 'pending', author: undefined }
+                  : m
+              )
+            );
+            setStreamingAuthor(null);
+          }
+          outcome = await attemptStream(text, contextId, asstMsgId, attempt > 0);
+          if (outcome.kind !== 'retryable') break;
+        }
       } finally {
         setIsStreaming(false);
         activeIdRef.current = null;
@@ -247,9 +330,9 @@ export function useChatStream(): UseChatStreamReturn {
         }
       }
 
-      return { contextId: resolvedContextId };
+      return { contextId: outcome.contextId };
     },
-    [isStreaming, scheduleFlush, stopFlush]
+    [isStreaming, attemptStream],
   );
 
   const reset = useCallback(() => {

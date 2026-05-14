@@ -25,7 +25,7 @@ export interface KagentUsageMetadata {
 }
 
 export interface EventMetadata {
-  kagent_author?: 'planner' | 'analyst' | 'writer' | string;
+  kagent_author?: 'planner' | 'worker' | string;
   kagent_usage_metadata?: KagentUsageMetadata;
   kagent_app_name?: string;
   kagent_session_id?: string;
