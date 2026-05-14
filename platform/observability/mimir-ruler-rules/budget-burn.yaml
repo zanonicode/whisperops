@@ -1,0 +1,98 @@
+# Mimir ruler ConfigMap — Budget burn rules and kill-switch alerts.
+# Spend math lives here as PromQL recording rules (ADR-Obs-14).
+# Price table is in PromQL, versioned via Git. budget-controller polls
+# /prometheus/api/v1/alerts filtering for action=killswitch (ADR-Obs-14 §3).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-ruler-budget-burn
+  namespace: observability
+  labels:
+    mimir-ruler-rules: "1"
+data:
+  budget-burn.yaml: |
+    groups:
+      # ─── Token spend recording rules (Gemini 2.5 Flash price table) ────────
+      - name: whisperops_spend
+        interval: 60s
+        rules:
+          # Rate-based spend estimate (per 5m window)
+          - record: whisperops_spend_usd_total
+            expr: |
+              (
+                sum by (agent_name, namespace) (
+                  rate(whisperops_tokens_input_total{model="gemini-2.5-flash"}[5m])
+                ) * 60 * 5 * (0.30 / 1000000)
+              )
+              +
+              (
+                sum by (agent_name, namespace) (
+                  rate(whisperops_tokens_output_total{model="gemini-2.5-flash"}[5m])
+                ) * 60 * 5 * (2.50 / 1000000)
+              )
+              +
+              (
+                sum by (agent_name, namespace) (
+                  rate(whisperops_tokens_cached_input_total{model="gemini-2.5-flash"}[5m])
+                ) * 60 * 5 * (0.03 / 1000000)
+              )
+
+          # 24h windowed cumulative spend — used by BudgetBurnWarn/Page alerts
+          - record: whisperops_spend_usd:cumulative
+            expr: |
+              (
+                sum by (agent_name, namespace) (
+                  increase(whisperops_tokens_input_total{model="gemini-2.5-flash"}[1d])
+                ) * (0.30 / 1000000)
+              )
+              +
+              (
+                sum by (agent_name, namespace) (
+                  increase(whisperops_tokens_output_total{model="gemini-2.5-flash"}[1d])
+                ) * (2.50 / 1000000)
+              )
+              +
+              (
+                sum by (agent_name, namespace) (
+                  increase(whisperops_tokens_cached_input_total{model="gemini-2.5-flash"}[1d])
+                ) * (0.03 / 1000000)
+              )
+
+      # ─── Budget kill-switch alerts ──────────────────────────────────────────
+      - name: whisperops_budget_alerts
+        interval: 60s
+        rules:
+          - alert: BudgetBurnWarn
+            expr: |
+              whisperops_spend_usd:cumulative
+              /
+              on(agent_name, namespace) whisperops_agent_budget_usd
+              > 0.80
+            for: 1m
+            labels:
+              severity: warn
+              slo: budget
+            annotations:
+              summary: "Agent {{ $labels.agent_name }} has consumed > 80% of budget"
+              spend_usd: "{{ $value }}"
+              budget_usd: "{{ with query (printf \"whisperops_agent_budget_usd{agent_name='%s',namespace='%s'}\" $labels.agent_name $labels.namespace) }}{{ . | first | value }}{{ end }}"
+              dashboard: "https://grafana/d/cost-and-tokens"
+              runbook: "docs/runbooks/budget-kill-switch.md"
+
+          - alert: BudgetBurnPage
+            expr: |
+              whisperops_spend_usd:cumulative
+              /
+              on(agent_name, namespace) whisperops_agent_budget_usd
+              >= 1.00
+            for: 0s
+            labels:
+              severity: page
+              action: killswitch
+              slo: budget
+            annotations:
+              summary: "Agent {{ $labels.agent_name }} budget exhausted — kill-switch triggered"
+              spend_usd: "{{ $value }}"
+              budget_usd: "{{ with query (printf \"whisperops_agent_budget_usd{agent_name='%s',namespace='%s'}\" $labels.agent_name $labels.namespace) }}{{ . | first | value }}{{ end }}"
+              dashboard: "https://grafana/d/cost-and-tokens"
+              runbook: "docs/runbooks/budget-kill-switch.md"

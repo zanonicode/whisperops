@@ -1,0 +1,155 @@
+# Mimir ruler ConfigMap — SLI recording rules (Bucket A/B/C) + MWMBR alerts.
+# Covers: A2A latency (A), collector self-metrics (B), platform health (C).
+# ADR-Obs-7 split: this file handles the second SLI surface area.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-ruler-sli-recording
+  namespace: observability
+  labels:
+    mimir-ruler-rules: "1"
+data:
+  sli-recording-rules.yaml: |
+    groups:
+      # ─── A.1 — kagent A2A planner→analyst latency ──────────────────────────
+      - name: kagent_a2a_latency
+        interval: 30s
+        rules:
+          - record: kagent:a2a_latency_p95:rate_5m
+            expr: |
+              histogram_quantile(0.95,
+                sum by (agent_name, le) (
+                  rate(traces_spanmetrics_latency_bucket{service="kagent-controller",span_kind="SPAN_KIND_CLIENT"}[5m])
+                )
+              )
+
+          - record: kagent:a2a_success_ratio:rate_5m
+            expr: |
+              sum by (agent_name) (
+                rate(traces_spanmetrics_calls_total{service="kagent-controller",span_kind="SPAN_KIND_CLIENT",status_code!="STATUS_CODE_ERROR"}[5m])
+              )
+              /
+              sum by (agent_name) (
+                rate(traces_spanmetrics_calls_total{service="kagent-controller",span_kind="SPAN_KIND_CLIENT"}[5m])
+              )
+
+          - alert: SLO_KagentA2ALatencyFast
+            expr: kagent:a2a_latency_p95:rate_5m > 30
+            for: 5m
+            labels:
+              severity: warn
+              slo: kagent_a2a_latency
+            annotations:
+              summary: "kagent A2A p95 latency > 30s"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── A.2 — kagent A2A error rate ────────────────────────────────────────
+      - name: kagent_a2a_errors
+        interval: 30s
+        rules:
+          - record: kagent:a2a_error_rate:rate_5m
+            expr: |
+              1 - kagent:a2a_success_ratio:rate_5m
+
+          - alert: SLO_KagentA2AErrorFast
+            expr: kagent:a2a_error_rate:rate_5m > 0.05
+            for: 5m
+            labels:
+              severity: warn
+              slo: kagent_a2a_errors
+            annotations:
+              summary: "kagent A2A error rate > 5%"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── A.3 — Vertex API availability (via Tempo span metrics) ─────────────
+      - name: vertex_availability
+        interval: 30s
+        rules:
+          - record: vertex:availability:ratio_rate_5m
+            expr: |
+              sum (
+                rate(traces_spanmetrics_calls_total{service="kagent-controller",span_kind="SPAN_KIND_CLIENT",status_code!="STATUS_CODE_ERROR"}[5m])
+              )
+              /
+              sum (
+                rate(traces_spanmetrics_calls_total{service="kagent-controller",span_kind="SPAN_KIND_CLIENT"}[5m])
+              )
+
+          - alert: SLO_VertexAvailabilityLow
+            expr: vertex:availability:ratio_rate_5m < 0.95
+            for: 5m
+            labels:
+              severity: warn
+              slo: vertex_availability
+            annotations:
+              summary: "Vertex AI availability < 95% (last 5m)"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── A.4 — Token cache hit rate ─────────────────────────────────────────
+      - name: token_cache_hit
+        interval: 30s
+        rules:
+          - record: whisperops:token_cache_hit_rate:rate_5m
+            expr: |
+              sum by (agent_name) (rate(whisperops_tokens_cached_input_total[5m]))
+              /
+              (
+                sum by (agent_name) (rate(whisperops_tokens_input_total[5m]))
+                + sum by (agent_name) (rate(whisperops_tokens_cached_input_total[5m]))
+              )
+
+      # ─── C.1 — ArgoCD sync health ───────────────────────────────────────────
+      - name: argocd_sync_health
+        interval: 60s
+        rules:
+          - record: argocd:apps_synced_ratio:rate_5m
+            expr: |
+              sum(argocd_app_info{sync_status="Synced"})
+              /
+              sum(argocd_app_info)
+
+          - alert: ArgoCD_AppNotSynced
+            expr: argocd_app_info{sync_status!="Synced"} == 1
+            for: 10m
+            labels:
+              severity: warn
+              slo: argocd_sync
+            annotations:
+              summary: "ArgoCD application {{ $labels.name }} is not Synced"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── C.2 — Crossplane provider health ──────────────────────────────────
+      - name: crossplane_health
+        interval: 60s
+        rules:
+          - record: crossplane:providers_healthy_ratio
+            expr: |
+              sum(crossplane_provider_healthy)
+              /
+              sum(crossplane_provider_installed)
+
+          - alert: Crossplane_ProviderUnhealthy
+            expr: crossplane_provider_healthy == 0
+            for: 5m
+            labels:
+              severity: warn
+              slo: crossplane_health
+            annotations:
+              summary: "Crossplane provider {{ $labels.name }} is unhealthy"
+
+      # ─── C.3 — Kyverno policy violations ────────────────────────────────────
+      - name: kyverno_violations
+        interval: 60s
+        rules:
+          - record: kyverno:policy_violations:rate_5m
+            expr: |
+              sum(increase(kyverno_policy_results_total{rule_result="fail"}[5m]))
+
+          - alert: Kyverno_PolicyViolation
+            expr: kyverno:policy_violations:rate_5m > 0
+            for: 5m
+            labels:
+              severity: warn
+              slo: kyverno_policy
+            annotations:
+              summary: "Kyverno policy violations detected in last 5m"

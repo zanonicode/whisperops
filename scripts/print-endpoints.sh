@@ -65,6 +65,12 @@ cat <<EOF
                         giteaAdmin / ${GITEA}
   Grafana             https://grafana.${VM_IP}.sslip.io:8443
                         admin / ${GRAFANA}
+                        ↳ 8 dashboards under "whisperops":
+                          cluster-health, llm-platform-overview, slo-compliance,
+                          service-map, cost-and-tokens, red-method,
+                          apdex-per-agent, argocd-crossplane-platform-health
+                        ↳ datasources: Mimir (metrics), Loki (logs),
+                          Tempo (traces — GCS-backed via tempo-mono)
 
   ── SSH tunnel (required for Backstage SSO + Keycloak admin console) ────
   In another terminal, keep open:
@@ -82,10 +88,13 @@ cat <<EOF
   ── Internal (port-forward only, no Ingress by design) ──────────────────
   kagent UI           gcloud compute ssh whisperops-vm --zone=${ZONE} \\
                         --command='sudo kubectl -n kagent-system port-forward svc/kagent 8001:80'
-
-  ── External SaaS ───────────────────────────────────────────────────────
-  Langfuse            https://us.cloud.langfuse.com
-                        env from langfuse-credentials Secret
+                        ↳ then browse http://localhost:8001
+  Langfuse UI         gcloud compute ssh whisperops-vm --zone=${ZONE} \\
+                        --command='sudo kubectl -n observability port-forward svc/langfuse-web 3000:3000'
+                        ↳ then browse http://localhost:3000
+                        ↳ first launch: sign up to create initial user (no
+                          baked-in admin); Postgres on Cloud SQL via Auth
+                          Proxy sidecar (ADR-Obs-3, self-hosted on cluster)
 
   ── Per-agent chat URLs (after Backstage scaffold) ───────────────────────
   Pattern: https://chat-<agent-name>.${VM_IP}.sslip.io:8443

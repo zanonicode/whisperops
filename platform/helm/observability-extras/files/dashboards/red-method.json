@@ -1,0 +1,159 @@
+{
+  "title": "D7 — RED Method (per service)",
+  "uid": "whisperops-red-method",
+  "tags": ["red", "rate", "errors", "duration", "sre"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "chat-frontend — Rate (req/min)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(http_requests_total{service=\"chat-frontend\"}[5m])) * 60",
+          "legendFormat": "req/min"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "chat-frontend — Errors (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "100 * sum(rate(http_requests_total{service=\"chat-frontend\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"chat-frontend\"}[5m]))",
+          "legendFormat": "error %"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "chat-frontend — TTFT p50/p95/p99",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(chat_frontend_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(chat_frontend_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(chat_frontend_ttft_seconds_bucket[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "sandbox — Rate (executions/min)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(sandbox_executions_total[5m])) * 60",
+          "legendFormat": "exec/min"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "sandbox — Errors (OOM + timeout + error %)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(sandbox_executions_total{outcome=\"error\"}[5m])) * 60",
+          "legendFormat": "errors/min"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(sandbox_oom_total[5m])) * 60",
+          "legendFormat": "oom/min"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(sandbox_timeouts_total[5m])) * 60",
+          "legendFormat": "timeouts/min"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "sandbox — Duration p50/p95/p99 (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(sandbox_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sandbox_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(sandbox_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "budget-controller — Poll cycle rate",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"budget-controller\"}[5m])) * 60",
+          "legendFormat": "cycles/min"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "kagent-controller — A2A call rate",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(traces_spanmetrics_calls_total{service=\"kagent-controller\",span_kind=\"SPAN_KIND_CLIENT\"}[5m])) * 60",
+          "legendFormat": "a2a calls/min"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "kagent-controller — A2A p95 latency (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "kagent:a2a_latency_p95:rate_5m",
+          "legendFormat": "p95 A2A latency"
+        }
+      ]
+    }
+  ]
+}

@@ -37,6 +37,14 @@ spec:
           - resources:
               kinds:
                 - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - observability
+              selector:
+                matchLabels:
+                  app.kubernetes.io/name: prometheus-node-exporter
       validate:
         message: "Host namespaces (hostNetwork, hostPID, hostIPC) are not allowed."
         pattern:

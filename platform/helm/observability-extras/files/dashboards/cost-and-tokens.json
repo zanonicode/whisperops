@@ -1,0 +1,113 @@
+{
+  "title": "D6 — Cost and Token Economics",
+  "uid": "whisperops-cost-tokens",
+  "tags": ["cost", "tokens", "budget", "gemini"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "60s",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "agent_name",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mimir" },
+        "query": "label_values(whisperops_tokens_input_total, agent_name)",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": true,
+        "label": "Agent"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cumulative Spend USD (24h) per Agent",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "whisperops_spend_usd:cumulative{agent_name=~\"$agent_name\"}",
+          "legendFormat": "{{ agent_name }}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Budget Utilization % per Agent",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.8 },
+              { "color": "red", "value": 1.0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "whisperops_spend_usd:cumulative{agent_name=~\"$agent_name\"} / on(agent_name,namespace) whisperops_agent_budget_usd",
+          "legendFormat": "{{ agent_name }}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Token Spend Rate ($/min)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "whisperops_spend_usd_total{agent_name=~\"$agent_name\"}",
+          "legendFormat": "spend rate: {{ agent_name }}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Token Breakdown (input / output / cached)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (agent_name) (rate(whisperops_tokens_input_total{agent_name=~\"$agent_name\"}[5m])) * 60",
+          "legendFormat": "input/min: {{ agent_name }}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (agent_name) (rate(whisperops_tokens_output_total{agent_name=~\"$agent_name\"}[5m])) * 60",
+          "legendFormat": "output/min: {{ agent_name }}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (agent_name) (rate(whisperops_tokens_cached_input_total{agent_name=~\"$agent_name\"}[5m])) * 60",
+          "legendFormat": "cached/min: {{ agent_name }}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Cache Hit Rate % (cost savings)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "100 * whisperops:token_cache_hit_rate:rate_5m{agent_name=~\"$agent_name\"}",
+          "legendFormat": "cache hit %: {{ agent_name }}"
+        }
+      ]
+    }
+  ]
+}

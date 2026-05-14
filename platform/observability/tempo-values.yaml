@@ -1,0 +1,132 @@
+# Standalone Tempo single-binary chart values for whisperops.
+# Chart: grafana/tempo v1.24.4 (ADR-Obs-5 — single-binary, not tempo-distributed).
+# GCS backend provisioned via Terraform (ADR-Obs-1); WAL PVC for durability (AT-TD.3).
+# Metrics-generator emits traces_spanmetrics_* to Mimir (ADR-Obs-13).
+fullnameOverride: tempo-mono
+
+# Extended probe timing — Tempo single-binary needs time to init all modules
+# (compactor + ingester + metrics-generator + GCS) before /ready returns 200.
+# Chart default delay=30s is too short for cold-start with GCS backend.
+livenessProbe:
+  httpGet:
+    path: /ready
+    port: 3200
+  initialDelaySeconds: 120
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 3200
+  initialDelaySeconds: 60
+  periodSeconds: 20
+  timeoutSeconds: 10
+  failureThreshold: 10
+
+tempo:
+  storage:
+    trace:
+      backend: gcs
+      gcs:
+        # Hardcoded — Tempo doesn't do shell-env-var interpolation by default
+        # (would need --config.expand-env=true). Bucket name is static per
+        # terraform/observability.tf (var.tempo_blocks_bucket_name default).
+        bucket_name: whisperops-tempo-blocks
+        chunk_buffer_size: 10485760
+      wal:
+        path: /var/tempo/wal
+
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  # Metrics generator: derives traces_spanmetrics_* and service_graphs_* metrics
+  # from ingested spans and remote_writes them to Mimir. Dimensions scoped to 4
+  # labels to cap cardinality at ~192 series (ADR-Obs-13).
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: http://lgtm-distributed-mimir-nginx.observability.svc:80/api/v1/push
+    processors:
+      - span_metrics
+      - service_graphs
+    registry:
+      external_labels:
+        source: tempo
+        cluster: whisperops
+    processor:
+      span_metrics:
+        dimensions:
+          - service.name
+          - span.name
+          - span.kind
+          - status.code
+        histogram_buckets:
+          - 0.5
+          - 1
+          - 2
+          - 5
+          - 10
+          - 30
+          - 60
+          - 120
+          - 300
+          - 600
+        filter_policies:
+          - include:
+              match_type: strict
+              attributes:
+                - key: telemetry.sdk.language
+                  value: js-server
+
+  # Query frontend: expose Tempo API on the standard port
+  # http_listen_port intentionally NOT overridden — chart probes hardcode :3200
+  # and the chart default (3200) aligns with that. Setting 3100 caused probe
+  # failures → Tempo crash-loop.
+
+  ingester:
+    trace_idle_period: 10s
+    max_block_duration: 5m
+
+  compactor:
+    compaction:
+      block_retention: 720h
+
+persistence:
+  enabled: true
+  storageClassName: standard
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+extraVolumeMounts:
+  - name: tempo-gcs-creds
+    mountPath: /var/run/gcp
+    readOnly: true
+
+extraVolumes:
+  - name: tempo-gcs-creds
+    secret:
+      secretName: tempo-gcs-credentials
+
+extraEnvs:
+  - name: GOOGLE_APPLICATION_CREDENTIALS
+    value: /var/run/gcp/credentials.json
+  - name: TEMPO_BLOCKS_BUCKET
+    valueFrom:
+      secretKeyRef:
+        name: tempo-gcs-credentials
+        key: bucket_name
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi

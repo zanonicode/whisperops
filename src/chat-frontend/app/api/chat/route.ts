@@ -1,245 +1,63 @@
-import type { NextRequest } from 'next/server';
-import { SpanStatusCode } from '@opentelemetry/api';
-import { getServerTracer } from '../../../lib/server-tracing';
-import { fetchInvokeResponse, processInvokeStream, KagentInvokeError } from '../../../lib/kagent-stream';
+import { NextRequest } from 'next/server';
+import { buildStreamEnvelope, buildSendEnvelope } from '@/lib/kagent/envelope';
+import { createRelay } from '@/lib/kagent/relay';
+import { runSendFallback } from '@/lib/kagent/sendFallback';
+import { newId } from '@/lib/id';
+import { getEnv } from '@/lib/env';
 
-const KAGENT_BASE_URL =
-  process.env.KAGENT_BASE_URL ?? 'http://kagent.kagent-system.svc.cluster.local';
-const AGENT_NAMESPACE = process.env.AGENT_NAMESPACE ?? 'agent-housing-demo';
-const AGENT_NAME = process.env.AGENT_NAME ?? 'planner';
-const USER_ID = process.env.USER_ID ?? 'demo@whisperops';
-const AGENT_REF = `${AGENT_NAMESPACE}/${AGENT_NAME}`;
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-let cachedTeamConfig: unknown = null;
+export async function POST(req: NextRequest) {
+  const env = getEnv();
 
-// kagent has a two-layer state model: K8s CRs (desired) vs an in-process SQLite
-// registry (runtime). The reconciler inserts CRs into SQLite asynchronously, so
-// for the first few seconds after a fresh agent scaffold, kagent's HTTP API
-// returns 404 with "record not found" / "Agent not found" / "failed to get
-// model" while the reconciler catches up. Retry only that specific signature.
-const SQLITE_RACE_PATTERN = /record not found|agent not found|failed to get (model|agent)/i;
-const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
-
-function isSqliteRaceTransient(status: number, bodyText: string): boolean {
-  return status === 404 && SQLITE_RACE_PATTERN.test(bodyText);
-}
-
-async function withSqliteRaceRetry<T>(
-  op: () => Promise<T>,
-  label: string,
-): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      return await op();
-    } catch (err) {
-      lastErr = err;
-      const transient =
-        err instanceof KagentRaceError && isSqliteRaceTransient(err.status, err.bodyText);
-      if (!transient || attempt === RETRY_DELAYS_MS.length) throw err;
-      const delay = RETRY_DELAYS_MS[attempt];
-      console.warn(
-        `${label}: SQLite race detected (HTTP ${(err as KagentRaceError).status}), ` +
-          `retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_DELAYS_MS.length})`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-  throw lastErr;
-}
-
-class KagentRaceError extends Error {
-  constructor(public readonly status: number, public readonly bodyText: string, message: string) {
-    super(message);
-    this.name = 'KagentRaceError';
-  }
-}
-
-async function fetchTeamConfig(): Promise<unknown> {
-  if (cachedTeamConfig) return cachedTeamConfig;
-  const url = `${KAGENT_BASE_URL}/api/agents/${AGENT_NAMESPACE}/${AGENT_NAME}`;
-  cachedTeamConfig = await withSqliteRaceRetry(async () => {
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new KagentRaceError(res.status, text, `kagent /api/agents fetch failed: HTTP ${res.status} ${text}`);
-    }
-    const body = (await res.json()) as { data?: { component?: unknown } };
-    if (!body.data?.component) {
-      throw new Error('kagent /api/agents response missing data.component');
-    }
-    return body.data.component;
-  }, 'fetchTeamConfig');
-  return cachedTeamConfig;
-}
-
-async function createSession(): Promise<string> {
-  const url = `${KAGENT_BASE_URL}/api/sessions`;
-  return withSqliteRaceRetry(async () => {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: USER_ID,
-        agent_ref: AGENT_REF,
-        name: `chat-${Date.now()}`,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new KagentRaceError(res.status, text, `kagent createSession failed: HTTP ${res.status} ${text}`);
-    }
-    const body = (await res.json()) as { data?: { id?: string } };
-    if (!body.data?.id) {
-      throw new Error('kagent createSession response missing data.id');
-    }
-    return body.data.id;
-  }, 'createSession');
-}
-
-function isSessionNotFound(err: unknown): boolean {
-  return (
-    err instanceof KagentInvokeError &&
-    err.status === 404 &&
-    /session not found/i.test(err.bodyText)
-  );
-}
-
-function sessionCookieValue(sessionId: string): string {
-  return `kagent-session-id=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
-}
-
-function sseChunk(payload: object): Uint8Array {
-  return new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-export async function POST(req: NextRequest): Promise<Response> {
-  const tracer = getServerTracer();
-  const span = tracer.startSpan('chat.handle');
-  span.setAttribute('agent.id', AGENT_NAMESPACE);
-  span.setAttribute('agent.ref', AGENT_REF);
-
-  const reqBody = (await req.json()) as {
-    message?: string;
-    history?: { role: 'user' | 'assistant'; content: string }[];
-  };
-  const message = (reqBody.message ?? '').trim();
-  const history = reqBody.history ?? [];
-  span.setAttribute('message.length', message.length);
-  span.setAttribute('history.turns', history.length);
-  if (!message) {
-    span.setStatus({ code: SpanStatusCode.ERROR, message: 'empty message' });
-    span.end();
-    return new Response(JSON.stringify({ error: 'message is required' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  // Prepend conversation history to the task so the planner has multi-turn context.
-  const task =
-    history.length === 0
-      ? message
-      : `Previous conversation:\n${history
-          .map((m) => `${m.role}: ${m.content}`)
-          .join('\n')}\n\nCurrent question: ${message}`;
-
-  const cookieHeader = req.headers.get('cookie') ?? '';
-  const cookieMatch = cookieHeader.match(/kagent-session-id=([a-f0-9-]+)/);
-  let sessionId = cookieMatch?.[1];
-  let setCookie: string | null = null;
-  if (!sessionId) {
-    sessionId = await createSession();
-    setCookie = sessionCookieValue(sessionId);
-  }
-
-  // Fetch the team config and the upstream invoke response before building the
-  // ReadableStream so that a recoverable 404 can be handled and the Set-Cookie
-  // header can reflect the final session id used.
-  let teamConfig: unknown;
-  let upstream: Response;
-  let recovered = false;
-
+  let body: { text?: string; contextId?: string };
   try {
-    teamConfig = await fetchTeamConfig();
-    upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, task, teamConfig);
-  } catch (err) {
-    if (isSessionNotFound(err)) {
-      span.addEvent('session_recovered_after_404');
-      sessionId = await createSession();
-      setCookie = sessionCookieValue(sessionId);
-      recovered = true;
-      // Let any second failure propagate as a non-recoverable error.
-      upstream = await fetchInvokeResponse(KAGENT_BASE_URL, sessionId, USER_ID, task, teamConfig!);
-    } else {
-      const msg = err instanceof Error ? err.message : 'invoke failed';
-      span.setAttribute('session.recovered', false);
-      span.recordException(err instanceof Error ? err : new Error(msg));
-      span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
-      span.end();
-      const errorStream = new ReadableStream({
-        start(controller) {
-          controller.enqueue(sseChunk({ error: msg }));
-          controller.close();
-        },
-      });
-      return new Response(errorStream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no',
-        },
-      });
-    }
+    body = (await req.json()) as { text?: string; contextId?: string };
+  } catch {
+    return Response.json({ error: 'invalid JSON body' }, { status: 400 });
   }
 
-  span.setAttribute('session.recovered', recovered);
+  const { text, contextId } = body;
 
-  const capturedUpstream = upstream!;
-  const capturedSessionId = sessionId;
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return Response.json({ error: 'text is required' }, { status: 400 });
+  }
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const invokeSpan = tracer.startSpan('kagent.invoke');
-      invokeSpan.setAttribute('agent.id', AGENT_NAMESPACE);
-      invokeSpan.setAttribute('agent.role', AGENT_NAME);
-      invokeSpan.setAttribute('agent.ref', AGENT_REF);
-      invokeSpan.setAttribute('kagent.session_id', capturedSessionId);
-      invokeSpan.setAttribute('user.id', USER_ID);
-      invokeSpan.setAttribute('session.recovered', recovered);
-      let finalChunkCount = 0;
-      try {
-        await processInvokeStream(
-          capturedUpstream,
-          controller,
-          (n) => { finalChunkCount = n; },
-        );
-        invokeSpan.setAttribute('stream.chunk_count', finalChunkCount);
-        invokeSpan.setStatus({ code: SpanStatusCode.OK });
-        span.setStatus({ code: SpanStatusCode.OK });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'invoke failed';
-        controller.enqueue(sseChunk({ error: msg }));
-        invokeSpan.recordException(err instanceof Error ? err : new Error(msg));
-        invokeSpan.setStatus({ code: SpanStatusCode.ERROR, message: msg });
-        span.recordException(err instanceof Error ? err : new Error(msg));
-        span.setStatus({ code: SpanStatusCode.ERROR, message: msg });
-      } finally {
-        controller.close();
-        invokeSpan.end();
-        span.end();
-      }
-    },
-  });
+  const messageId = newId();
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  };
-  if (setCookie) headers['Set-Cookie'] = setCookie;
+  if (env.STREAMING_ENABLED === 'false') {
+    return runSendFallback({
+      plannerUrl: env.PLANNER_URL,
+      envelope: buildSendEnvelope(text.trim(), contextId, messageId),
+    });
+  }
 
+  const envelope = buildStreamEnvelope(text.trim(), contextId, messageId);
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${env.PLANNER_URL}/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify(envelope),
+      signal: req.signal,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'planner unreachable';
+    return Response.json({ error: message }, { status: 502 });
+  }
+
+  if (!upstream.ok || !upstream.body) {
+    return Response.json(
+      { error: `planner returned ${upstream.status}` },
+      { status: 502 }
+    );
+  }
+
+  const { stream, headers } = createRelay(upstream.body, { messageId });
   return new Response(stream, { headers });
 }

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${{values.agent_name}}-dashboard
+  namespace: ${{values.agent_name}}
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/managed-by: backstage
+    whisperops.io/agent: "${{values.agent_name}}"
+  annotations:
+    whisperops.io/dataset: "${{values.dataset_id}}"
+    whisperops.io/budget-usd: "${{values.budget_usd}}"
+data:
+  k8s/${{values.agent_name}}/per-agent-detail.json: |
+{% filter indent(4) %}
+{% include "dashboard.json.njk" %}
+{% endfilter %}

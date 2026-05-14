@@ -1,5 +1,6 @@
 # Application-platform-layer charts (kagent + Crossplane + Kyverno + LGTM
-# + OTel Collector). Installed AFTER the IDP layer (idpbuilder/CNOE) is up.
+# + OTel Collector + Tempo + Alloy + node-exporter + kube-state-metrics + Langfuse).
+# Installed AFTER the IDP layer (idpbuilder/CNOE) is up.
 #
 # DESIGN-time intent had a final `argocd-root-app` Helm release that would
 # install argo/argo-cd into the argocd namespace; that's been DROPPED — the
@@ -18,6 +19,10 @@ repositories:
     url: https://charts.crossplane.io/stable
   - name: emberstack
     url: https://emberstack.github.io/helm-charts
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
+  - name: langfuse-k8s
+    url: https://langfuse.github.io/langfuse-k8s
 
 releases:
   - name: crossplane
@@ -44,6 +49,58 @@ releases:
     values:
       - /tmp/whisperops/platform/observability/lgtm-values.yaml
 
+  # Standalone Tempo single-binary (lgtm-distributed Tempo disabled — ADR-Obs-5).
+  # GCS-backed WAL/blocks (ADR-Obs-1). Metrics-generator emits spanmetrics to Mimir.
+  - name: tempo-mono
+    namespace: observability
+    createNamespace: true
+    chart: grafana/tempo
+    version: "1.24.4"
+    needs:
+      - observability/lgtm-distributed
+    values:
+      - /tmp/whisperops/platform/observability/tempo-values.yaml
+
+  # Grafana Alloy DaemonSet — k8s stdout log forwarding to Loki (ADR-Obs-10).
+  - name: alloy
+    namespace: observability
+    createNamespace: true
+    chart: grafana/alloy
+    version: "1.7.0"
+    needs:
+      - observability/lgtm-distributed
+    values:
+      - /tmp/whisperops/platform/observability/alloy-values.yaml
+
+  # node-exporter DaemonSet — USE method host metrics (ADR-Obs-11).
+  - name: prometheus-node-exporter
+    namespace: observability
+    createNamespace: true
+    chart: prometheus-community/prometheus-node-exporter
+    version: "4.55.0"
+    values:
+      - /tmp/whisperops/platform/observability/node-exporter-values.yaml
+
+  # kube-state-metrics — K8s API state metrics (ADR-Obs-11).
+  - name: kube-state-metrics
+    namespace: observability
+    createNamespace: true
+    chart: prometheus-community/kube-state-metrics
+    version: "7.3.0"
+    values:
+      - /tmp/whisperops/platform/observability/kube-state-metrics-values.yaml
+
+  # Self-hosted Langfuse (Cloud SQL Postgres backend via Auth Proxy sidecar — ADR-Obs-3).
+  - name: langfuse
+    namespace: observability
+    createNamespace: true
+    chart: langfuse-k8s/langfuse
+    version: "1.5.10"
+    needs:
+      - observability/lgtm-distributed
+    values:
+      - /tmp/whisperops/platform/observability/langfuse-values.yaml
+
   - name: opentelemetry-collector
     namespace: observability
     createNamespace: true
@@ -51,6 +108,9 @@ releases:
     version: "0.140.0"
     needs:
       - observability/lgtm-distributed
+      - observability/tempo-mono
+      - observability/prometheus-node-exporter
+      - observability/kube-state-metrics
     values:
       - /tmp/whisperops/platform/observability/otel-collector-values.yaml
 

@@ -1,0 +1,54 @@
+# kube-state-metrics chart values for whisperops.
+# Chart: prometheus-community/kube-state-metrics latest stable (ADR-Obs-11, Rule #10).
+# Deployment mode; default collectors cover pods, deployments, nodes, namespaces.
+# OTel Collector scrapes the /metrics endpoint via prometheus receiver.
+replicaCount: 1
+
+service:
+  port: 8080
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+
+prometheus:
+  monitor:
+    enabled: false
+
+collectors:
+  - certificatesigningrequests
+  - configmaps
+  - cronjobs
+  - daemonsets
+  - deployments
+  - endpoints
+  - horizontalpodautoscalers
+  - ingresses
+  - jobs
+  - leases
+  - limitranges
+  - mutatingwebhookconfigurations
+  - namespaces
+  - networkpolicies
+  - nodes
+  - persistentvolumeclaims
+  - persistentvolumes
+  - poddisruptionbudgets
+  - pods
+  - replicasets
+  - replicationcontrollers
+  - resourcequotas
+  - secrets
+  - serviceaccounts
+  - services
+  - statefulsets
+  - storageclasses
+  - validatingwebhookconfigurations
+  - volumeattachments
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi

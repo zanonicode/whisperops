@@ -232,44 +232,117 @@ kk 'sudo kubectl get secret -n crossplane-system ar-pull-secret-source -o jsonpa
 
 `https://grafana.${VM_IP}.sslip.io:8443/`, login `admin` / `$GRAFANA_PASS`.
 
-Four whisperops dashboards (under "Dashboards"):
+**Platform dashboards** (Grafana folder `platform/`):
 
 | Dashboard | What it shows | Primary datasources |
 |---|---|---|
-| **Platform Health** | Pod readiness, resource utilization, ArgoCD app health | Mimir, Loki |
-| **Agent Cost** | Per-agent spend rollups (current cycle, lifetime) | Langfuse Infinity REST, Mimir |
-| **Agent Performance** | A2A span latency (Planner / Analyst / Writer), p50/p95 | Tempo (TraceQL) |
-| **Sandbox Execution** | Execution rate, OOM rate, timeout rate, error rate | Loki (LogQL), Tempo |
+| **Cluster Health** | Pod readiness, node CPU/memory, PVC utilization | Mimir (kube-state-metrics, node-exporter) |
+| **LLM Platform Overview** | A2A latency p50/p95, token usage, request rate, error rate | Mimir (traces_spanmetrics_*, whisperops_tokens_*) |
+| **SLO Compliance** | Error budget burn-down, SLO ratio trend, MWMBR alert state | Mimir (sli:* recording rules) |
+| **Service Map** | Live inter-service dependency graph from Tempo span metrics | Tempo (nodeGraph) |
+| **Cost and Tokens** | Per-agent cumulative spend vs budget, token input/output breakdown | Mimir (whisperops_spend_usd:cumulative) |
+| **RED Method per Agent** | Rate, Errors, Duration per agent namespace | Mimir |
+| **Apdex per Agent** | Apdex T=10s score per agent; satisfied/tolerable/frustrated breakdown | Mimir (sli:apdex_score recording rule) |
+| **ArgoCD / Crossplane Platform Health** | ArgoCD app sync health, Crossplane provider health, Kyverno violations | Mimir |
 
-Some panels currently use Langfuse Infinity / Tempo TraceQL / Loki LogQL queries as workarounds for metrics that no v0.3 component emits natively. Plans to migrate to native PromQL once the budget-controller + sandbox emit `whisperops_*` instruments are tracked in the internal backlog.
+**Per-agent detail dashboards** (Grafana folder `k8s/{agent_name}/`): provisioned automatically at agent scaffold time. Each shows availability stat, TTFT p95, budget utilization, Apdex score, sandbox execution timeseries, token usage timeseries, Loki log stream, and Tempo TraceQL panel scoped to that agent.
+
+To navigate: Dashboards → Browse → folder `k8s/{agent_name}/` → "Agent {name} — Detail".
+
+### SLO budget-burn troubleshooting
+
+When an SLO alert fires (visible in Grafana Alerting → Alert rules):
+
+1. **Identify the burn rate**: open the SLO Compliance dashboard. A fast-burn alert (14.4×, severity: page) means the budget exhausts in ~2 days. A slow-burn (6×, severity: warn) exhausts in ~5 days.
+2. **Find the source**: RED Method per Agent dashboard → select the agent namespace → look for spike in error rate or latency p95.
+3. **Correlate with traces**: Explore → Tempo → TraceQL `{ resource.agent_name = "<name>" && status = error }`. Click a failing trace to find the span.
+4. **Follow trace→logs**: from a Tempo span, click "Logs for this span" — Grafana auto-generates a Loki query using the `trace_id` label extracted by Alloy from JSON log bodies.
+5. **See runbook**: `docs/runbooks/slo-burn-alert.md` for the full triage checklist.
+
+### Budget kill-switch
+
+The `BudgetBurnPage` alert (in the `mimir-ruler-budget-burn` ConfigMap) fires when `whisperops_spend_usd:cumulative` for an agent reaches 100% of its `budget_usd`. The `budget-controller` polls Mimir for this alert and scales all Deployments in the agent namespace to 0 replicas.
+
+To verify kill-switch state:
+
+```bash
+# Check firing alerts (run on VM)
+kk 'sudo kubectl exec -n observability deploy/lgtm-distributed-mimir-nginx -- \
+  wget -qO- http://localhost:80/prometheus/api/v1/alerts | jq ".data.alerts[] | select(.state==\"firing\")"'
+
+# Check budget-controller logs
+kk 'sudo kubectl logs -n whisperops-system deploy/budget-controller --tail=50'
+
+# Manually un-scale an agent after budget top-up
+kk 'sudo kubectl scale deploy planner analyst writer sandbox chat-frontend -n agent-{name} --replicas=1'
+```
+
+See `docs/runbooks/budget-kill-switch.md` for the full procedure.
+
+### Per-agent dashboard discovery
+
+Each scaffolded agent gets a dashboard ConfigMap in its own namespace at scaffold time. The Grafana sidecar auto-discovers it via the `grafana_dashboard: "1"` label. If the dashboard is missing after scaffold:
+
+```bash
+# Check ConfigMap exists
+kk 'sudo kubectl get configmap {agent_name}-dashboard -n agent-{name} -o jsonpath="{.metadata.labels}"'
+
+# Verify sidecar loaded it (look for "Dashboard added" in sidecar logs)
+kk 'sudo kubectl logs -n observability -l app.kubernetes.io/name=grafana -c grafana-sc-dashboard --tail=20'
+```
+
+### Trace-to-logs join walkthrough
+
+Grafana connects Tempo spans to Loki log lines via `tracesToLogsV2` configuration (set in lgtm-values.yaml). The join key is `trace_id`, which Alloy extracts from JSON log bodies using a `stage.json` pipeline stage.
+
+For the join to work, three things must be true:
+1. The log line must be JSON and contain a `trace_id` field.
+2. Alloy must be running (DaemonSet — one pod per node).
+3. The Loki label `trace_id` must match the Tempo span's `traceId`.
+
+To verify Alloy is extracting `trace_id`:
+
+```bash
+# Alloy pod status (expect 1/1 per node)
+kk 'sudo kubectl get pods -n observability -l app.kubernetes.io/name=alloy'
+
+# Check Alloy has RBAC to list pods (required for loki.source.kubernetes)
+kk 'sudo kubectl auth can-i list pods -n agent-housing-demo --as=system:serviceaccount:observability:alloy'
+
+# Sample a log line with trace_id extraction
+kk 'sudo kubectl logs -n observability -l app.kubernetes.io/name=alloy --tail=50 | grep -i trace_id'
+```
 
 ### Tracing (Tempo)
 
-In Grafana, **Explore → Tempo**. Each end-to-end query produces 3 A2A spans:
+In Grafana, **Explore → Tempo**. Each end-to-end query produces a span hierarchy:
 
 ```
 trace
-├── planner (Sonnet 4.5)
-│   ├── analyst (A2A call)
+├── planner (Gemini 2.5 Flash via Vertex AI)
+│   ├── analyst (A2A call → traces_spanmetrics_latency)
 │   │   └── sandbox.mcp.execute_python  ← subprocess timings, code length
 │   └── writer (A2A call)
 ```
 
-Each span carries `agent.namespace` and `agent.name` resource attributes. Filter by them via the TraceQL query bar: `{ resource.agent.name = "spotify-explorer" }`.
+Filter by agent: `{ resource.agent_name = "housing-demo" }`. Filter errors: `{ resource.agent_name = "housing-demo" && status = error }`.
 
-> Tempo currently uses in-memory storage. Pod restart loses trace history. Durable WAL/blocks are tracked in the internal backlog.
+Tempo uses GCS-backed WAL+blocks at `gs://whisperops-tempo-blocks/` (30-day lifecycle rule). The metrics-generator produces `traces_spanmetrics_calls_total` and `traces_spanmetrics_latency` — these are the SLI source for kagent A2A latency (tier A).
 
-### Langfuse Cloud (LLM ops)
+### Langfuse (self-hosted, LLM ops)
 
-`https://us.cloud.langfuse.com/`. Same traces as Tempo, but with LLM-specific views:
+Langfuse is deployed in-cluster as part of the observability helmfile release. It receives traces from the OTel Collector `otlphttp/langfuse` exporter.
 
-- **Traces** tab — token counts, cost per call, prompts, completions.
-- **Sessions** tab — multi-turn conversations grouped by `session.id`.
-- **Scores** tab — annotation rollups (if any).
+```bash
+# Langfuse pod status
+kk 'sudo kubectl get pods -n observability -l app.kubernetes.io/name=langfuse'
 
-Filter by `whisperops.agent.id` tag to scope to one agent.
+# Langfuse web URL (via port-forward — no Ingress by default)
+kk 'sudo kubectl port-forward -n observability svc/langfuse-web 3000:3000 &'
+# Then browse http://localhost:3000
+```
 
-> The Langfuse Cloud free tier (50k events/month) may be exhausted under heavy iteration. Three mitigations are tracked in the internal backlog: SDK sampling, self-host Langfuse via Helm, and trace filtering.
+See `docs/runbooks/langfuse-self-host-recovery.md` for pod recovery and Cloud SQL diagnostics.
 
 ### Logs (Loki)
 
@@ -279,20 +352,37 @@ In Grafana, **Explore → Loki**. Useful queries:
 # All sandbox execution errors across all agents
 {namespace=~"agent-.+", container="sandbox"} |= "ERROR"
 
-# Per-agent OTel collector traffic
-{namespace="observability", container="otel-collector"} |~ "agent.name=spotify-explorer"
+# Logs for a specific trace ID (paste from a Tempo span)
+{namespace=~"agent-.+"} | trace_id = "abc123..."
 
 # kagent reconciliation events
 {namespace="kagent-system"} |= "reconcile"
+
+# Alloy pipeline dropped lines (debug cardinality)
+{namespace="observability", app="alloy"} |= "stage.drop"
 ```
 
 ### Metrics (Mimir)
 
-In Grafana, **Explore → Mimir**. Existing metrics include `kube_pod_*`, `container_*`, `kagent_*` (where the kagent chart emits them), and standard cluster metrics. Native `whisperops_*` metrics (sandbox executions, budget spend gauges) are tracked in the internal backlog.
+In Grafana, **Explore → Mimir** (datasource uid: `mimir`). Key metric namespaces:
+
+| Prefix | Source | Examples |
+|---|---|---|
+| `kube_pod_*`, `kube_deployment_*` | kube-state-metrics | replica counts, container restarts |
+| `node_cpu_*`, `node_memory_*` | node-exporter | host CPU/memory utilization |
+| `traces_spanmetrics_*` | Tempo metrics-generator | A2A latency, call counts |
+| `whisperops_tokens_*` | sandbox OTel SDK | token input/output per model |
+| `sandbox_executions_total` | sandbox OTel SDK | execution outcomes (success/error) |
+| `sandbox_execution_duration_*` | sandbox OTel SDK | execution latency histogram |
+| `sli:*` | Mimir Ruler recording rules | pre-computed SLI ratios |
+| `whisperops_spend_usd:cumulative` | Mimir Ruler recording rules | per-agent daily spend USD |
 
 ### Cross-references
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — what each component does and how the data flows
 - [`SECRETS.md`](SECRETS.md) — SOPS + age workflow, what each Secret holds
 - [`SECURITY.md`](SECURITY.md) — threat model, IAM scoping, residual risks
-- [`runbooks/incident-response.md`](runbooks/incident-response.md) — incident procedures for budget breach, sandbox failures, Crossplane stuck, platform unreachable
+- [`runbooks/budget-kill-switch.md`](runbooks/budget-kill-switch.md) — budget breach → scale-to-zero procedure
+- [`runbooks/slo-burn-alert.md`](runbooks/slo-burn-alert.md) — SLO burn alert triage
+- [`runbooks/langfuse-self-host-recovery.md`](runbooks/langfuse-self-host-recovery.md) — Langfuse pod + Cloud SQL recovery
+- [`runbooks/incident-response.md`](runbooks/incident-response.md) — Crossplane stuck, platform unreachable

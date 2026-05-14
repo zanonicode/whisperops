@@ -10,7 +10,7 @@ WhisperOps is an Internal Developer Platform that provisions governed, observabl
 EXTERNAL
   Vertex AI (us-central1-aiplatform.googleapis.com — Gemini 2.5 Flash)
   OpenAI API (text-embedding-3-small — used by kagent UI sidecar)
-  Langfuse Cloud US (LLM traces + cost rollups)
+  Langfuse (self-hosted in-cluster via Helm — LLM trace viewer + cost UI)
   Let's Encrypt (TLS via cert-manager)
   Operator (gcloud, age key, kubectl)
 
@@ -18,6 +18,9 @@ GCP PROJECT (Terraform-managed)
   VPC + subnet + firewall + per-deploy external IP + sslip.io DNS
   Vertex AI API (aiplatform.googleapis.com)
   SA whisperops-kagent-vertex (roles/aiplatform.user — inference only)
+  SA whisperops-tempo-writer (roles/storage.objectAdmin on tempo-blocks bucket)
+  SA whisperops-grafana-gcm (roles/monitoring.viewer — GCP Cloud Monitoring)
+  Cloud SQL Postgres whisperops-langfuse-pg (Langfuse application DB)
   GCE e2-standard-8 VM (32 GB RAM / 8 vCPU, 100 GB SSD)
     kind cluster (single-node)
       IDP Layer (idpbuilder/CNOE, vendored)
@@ -27,8 +30,13 @@ GCP PROJECT (Terraform-managed)
           natively via controller.volumes; postRenderer scope: UI nginx-timeout only)
         Crossplane (GCP family providers + ProviderConfig — split sync waves)
         Kyverno  Reflector  ar-pull-secret rotation  budget-controller
-        LGTM-distributed (Loki + Mimir + Grafana)
-        OTel Collector  tempo-mono (single-binary tracing backend)
+        LGTM-distributed (Loki + Mimir + Grafana + 8 platform dashboards)
+        Grafana Tempo (single-binary v1.24.4, GCS WAL)
+        OTel Collector (traces+metrics+logs pipelines)
+        Grafana Alloy (DaemonSet log collector)
+        prometheus-node-exporter  kube-state-metrics
+        Mimir Ruler (4 ConfigMaps: SLOs + budget-burn + SLI recording + meta)
+        Langfuse (self-hosted v1.5.29 + Cloud SQL Auth Proxy sidecar)
       Per-Agent Layer (Backstage → Gitea → ArgoCD)
         namespace: agent-{name}
           agent-prompts ConfigMap (planner.md / analyst.md / writer.md)
@@ -65,14 +73,41 @@ GCP family providers (`provider-gcp-storage`, `provider-gcp-iam`, `provider-gcp-
 A source `ar-pull-secret-source` Secret in `crossplane-system` holds an Artifact Registry access token. A 30-min CronJob refreshes the token via `gcloud auth print-access-token`. Reflector replicates the Secret into every `agent-*` namespace so per-agent pods can pull `us-central1-docker.pkg.dev/.../whisperops-images/...` without per-namespace ESO plumbing.
 
 ### budget-controller
-Polls Langfuse REST API every 60 s for per-agent spend; compares against the `whisperops.io/budget-usd` annotation on each agent's namespace. At 80%: emits a K8s Warning Event + Prometheus counter. At 100%: scales all Deployments in the agent namespace to 0 replicas.
-
-> The kill-switch path is currently fragile (Langfuse REST + OTel pipeline drift exposed during a prior cycle). See `PENDING_whisperops.md §A2`.
+Polls the Mimir Ruler alerts API (`/prometheus/api/v1/alerts`) every 60 s for alerts with `state=firing` and `labels.action=killswitch`. The `BudgetBurnPage` rule (in `mimir-ruler-budget-burn`) fires when per-agent `whisperops_spend_usd:cumulative` reaches or exceeds the agent's `whisperops.io/budget-usd` annotation. At that threshold the controller scales all Deployments in the agent namespace to 0 replicas. At 80% a `BudgetBurnWarn` alert fires (severity: warn) — the controller surfaces this as a Kubernetes Warning Event without scaling.
 
 ### Observability stack
-LGTM-distributed (Loki + Mimir + Grafana) plus a standalone single-binary `tempo-mono` for tracing (the lgtm-distributed Tempo sub-chart is disabled because its distributor enforces a 2-ingester minimum that doesn't fit a single-node kind cluster). The OTel Collector dual-exports traces to both Tempo (in-cluster) and Langfuse Cloud (`otlphttp/langfuse` exporter). Grafana also queries Langfuse REST via the Infinity datasource for the cost-rollup dashboard.
 
-> Tempo currently uses in-memory storage; durable WAL/blocks are tracked in `PENDING_whisperops.md §B3`.
+17-component LGTM+ stack deployed in the `observability` namespace.
+
+**Signal collection:**
+- **Grafana Alloy** (DaemonSet, v1.7.0) — Kubernetes log collection. Tails `/var/log/containers/` via `loki.source.kubernetes`, extracts `trace_id` and `level` from JSON log bodies via `loki.process` pipeline stages, and forwards to Loki. Replaces deprecated Promtail.
+- **OTel Collector** — three pipelines: traces (OTLP → Tempo + Langfuse dual-export), metrics (OTLP + Prometheus scrape → Mimir remote-write), logs (OTLP → Loki). Prometheus scrape targets: node-exporter (:9100), kube-state-metrics (:8080), kagent (:8080), ArgoCD, Crossplane (:8080), Kyverno (:8000), OTel self-metrics (:8888).
+- **prometheus-node-exporter** (DaemonSet, v4.55.0) — host-level CPU, memory, disk, network metrics.
+- **kube-state-metrics** (v6.5.0) — Kubernetes object state metrics (pods, deployments, PVCs).
+
+**Storage and query backends:**
+- **LGTM-distributed** (Loki + Mimir + Grafana) — Loki ingests logs; Mimir stores metrics from OTel Collector remote-write plus Mimir Ruler-evaluated recording rules.
+- **Grafana Tempo** (single-binary, v1.24.4) — trace backend. GCS-backed WAL + blocks (`gs://whisperops-tempo-blocks/`). The lgtm-distributed Tempo sub-chart is disabled (its distributor enforces a 2-ingester minimum). Metrics-generator emits `traces_spanmetrics_calls_total` and `traces_spanmetrics_latency` recording rules into Mimir — these power the A2A latency SLIs without OTel SDK instrumentation on kagent.
+- **Self-hosted Langfuse** (v1.5.29, Helm chart) — LLM trace viewer and cost UI, backed by Cloud SQL Postgres via Cloud SQL Auth Proxy sidecar. Receives traces from OTel Collector `otlphttp/langfuse` exporter.
+
+**Rules and alerting:**
+- **Mimir Ruler** — evaluates SLI recording rules every 30s from four ConfigMaps (labeled `mimir-ruler-rules: "1"`):
+  - `mimir-ruler-platform-slos` — T1 chat-frontend availability/TTFT/e2e/Apdex, T2 sandbox success SLIs, MWMBR page+warn alerts
+  - `mimir-ruler-budget-burn` — per-agent spend recording rules, `BudgetBurnPage` (action: killswitch) at 100% budget
+  - `mimir-ruler-sli-recording-rules` — A/B/C tier SLIs: kagent A2A latency/errors, Vertex availability, ArgoCD, Crossplane, Kyverno
+  - `mimir-ruler-meta-observability` — OTel Collector health, queue saturation, Mimir ruler eval failures
+
+**Dashboards:**
+Eight platform dashboards in Grafana folder `platform/` (auto-discovered by Grafana sidecar via `grafana_dashboard: "1"` label on ConfigMaps):
+D1 Cluster Health, D2 LLM Platform Overview, D4 SLO Compliance, D5 Service Map, D6 Cost and Tokens, D7 RED Method per Agent, D8 Apdex per Agent, D9 ArgoCD/Crossplane Platform Health.
+
+Per-agent detail dashboards are provisioned automatically at scaffold time via the `observability/dashboard-configmap.yaml.njk` Backstage skeleton file (Grafana folder `k8s/{agent_name}/`).
+
+**Cloud resources (Terraform-managed, per Rule #12):**
+- `gs://whisperops-tempo-blocks/` — Tempo WAL + block storage (30-day lifecycle rule)
+- `whisperops-tempo-writer@` SA — `roles/storage.objectAdmin` on tempo-blocks bucket
+- `whisperops-grafana-gcm@` SA — `roles/monitoring.viewer` for GCP Cloud Monitoring datasource
+- Cloud SQL Postgres instance `whisperops-langfuse-pg` — Langfuse application database
 
 ### Platform-bootstrap Job (dormant)
 A one-shot Kubernetes Job intended to populate dataset profile JSON in Supabase pgvector. **Currently dormant** — Supabase is provisioned via SOPS-encrypted credentials but no runtime component reads from it; the Planner uses a literal `dataset_id` baked into its system prompt at scaffold time, not a runtime profile lookup. See `PENDING_whisperops.md §C1` for the wire-or-delete decision.
@@ -118,6 +153,7 @@ gs://{project}-datasets/                   # Shared, read-only for agents
   spotify-tracks.csv
 gs://agent-{name}/                         # Per-agent, R/W via mounted SA key
   charts/{uuid}.png                        # Chart artifacts uploaded by sandbox
+gs://whisperops-tempo-blocks/              # Tempo WAL + trace block storage (30-day lifecycle)
 ```
 
 The `whisperops-images` Artifact Registry repo (provisioned by Terraform) holds all four whisperops-owned images: `budget-controller`, `chat-frontend`, `sandbox`, `platform-bootstrap`.

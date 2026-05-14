@@ -14,20 +14,31 @@ Configuration (env, set on the Deployment):
   - DATASETS_BUCKET    default "whisperops-datasets"
   - GOOGLE_APPLICATION_CREDENTIALS  path to mounted SA key JSON
                                     (default /var/run/gcp/credentials.json)
+  - AGENT_NAME         injected by sandbox.yaml.njk via Backstage scaffolder
+  - POD_NAMESPACE      downward API (fieldRef spec.namespace)
 """
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import subprocess
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from .observability import logger, tracer
+from .observability import (
+    logger,
+    sandbox_duration,
+    sandbox_executions,
+    sandbox_oom,
+    sandbox_timeouts,
+    tracer,
+)
 
 EXECUTION_TIMEOUT_S = int(os.getenv("EXECUTION_TIMEOUT_S", "60"))
 
@@ -41,6 +52,10 @@ GOOGLE_CREDS = os.getenv(
     "GOOGLE_APPLICATION_CREDENTIALS", "/var/run/gcp/credentials.json"
 )
 
+_AGENT_NAME = os.getenv("AGENT_NAME", "default").replace("-", "_")
+AGENT_NAME_LABEL = os.getenv("AGENT_NAME", "default")
+NAMESPACE = os.getenv("POD_NAMESPACE", AGENT_NAME_LABEL)
+
 _TRANSPORT = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 mcp = FastMCP("sandbox", streamable_http_path="/", transport_security=_TRANSPORT)
 
@@ -48,9 +63,6 @@ mcp = FastMCP("sandbox", streamable_http_path="/", transport_security=_TRANSPORT
 # (not scoped per-ToolServer). Multiple agents each exposing `execute_python`
 # from their own sandbox MCP would collide on the second registration.
 # Namespace the tool name per agent so all N agents can register concurrently.
-# AGENT_NAME is injected by sandbox.yaml.njk via the Backstage scaffolder.
-# Hyphens become underscores since some MCP/kagent paths reject them.
-_AGENT_NAME = os.getenv("AGENT_NAME", "default").replace("-", "_")
 _TOOL_NAME = f"execute_python_{_AGENT_NAME}"
 
 
@@ -61,6 +73,24 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
+pio.templates["whisperops_vercel"] = go.layout.Template(
+    layout=go.Layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        colorway=["#0070f3","#34d399","#a78bfa","#f97316","#ec4899","#facc15","#22d3ee","#f472b6"],
+        font=dict(family="Geist Sans, ui-sans-serif, system-ui, sans-serif", color="#e4e4e7", size=13),
+        title=dict(font=dict(family="Geist Sans, ui-sans-serif, system-ui, sans-serif", color="#f4f4f5", size=15), x=0.01, xanchor="left"),
+        xaxis=dict(gridcolor="#333", linecolor="#444", tickcolor="#444", zerolinecolor="#444", tickfont=dict(color="#a1a1aa")),
+        yaxis=dict(gridcolor="#333", linecolor="#444", tickcolor="#444", zerolinecolor="#444", tickfont=dict(color="#a1a1aa")),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="#333", font=dict(color="#e4e4e7")),
+        hoverlabel=dict(bgcolor="#18181b", bordercolor="#333", font=dict(color="#f4f4f5", family="Geist Sans, ui-sans-serif, system-ui, sans-serif")),
+        margin=dict(l=48, r=24, t=48, b=48),
+    )
+)
+pio.templates.default = "plotly_dark+whisperops_vercel"
 df = pd.read_csv({path!r})
 OUT_DIR = {out_dir!r}
 """
@@ -81,7 +111,6 @@ def _ensure_dataset() -> Path:
 
     client = storage.Client.from_service_account_json(GOOGLE_CREDS)
     bucket = client.bucket(DATASETS_BUCKET)
-    # Datasets bucket convention: "{dataset_id}.csv".
     blob = bucket.blob(f"{DATASET_ID}.csv")
     if not blob.exists():
         raise FileNotFoundError(
@@ -94,24 +123,40 @@ def _ensure_dataset() -> Path:
     return DATASET_LOCAL_PATH
 
 
-def _upload_pngs(tmp_dir: Path) -> list[str]:
-    """Upload every *.png under tmp_dir to gs://AGENT_BUCKET/charts/.
-    Return signed URLs so the LLM can embed them in the response."""
-    pngs = sorted(tmp_dir.glob("*.png"))
-    if not pngs or not AGENT_BUCKET:
+def _upload_charts(tmp_dir: Path) -> list[str]:
+    """Upload every *.png AND *.json under tmp_dir to gs://AGENT_BUCKET/charts/.
+
+    Returns signed URLs the LLM can embed via markdown image syntax.
+    Content-type is set per extension: image/png or application/json.
+    """
+    if not AGENT_BUCKET:
         return []
     if not Path(GOOGLE_CREDS).exists():
         logger.warning("GOOGLE_APPLICATION_CREDENTIALS missing, skipping chart upload")
         return []
+
+    artifacts = sorted([*tmp_dir.glob("*.png"), *tmp_dir.glob("*.json")])
+    if not artifacts:
+        return []
+
     try:
         from google.cloud import storage
+
         client = storage.Client.from_service_account_json(GOOGLE_CREDS)
         bucket = client.bucket(AGENT_BUCKET)
         urls: list[str] = []
-        for png in pngs:
-            blob_name = f"charts/{uuid.uuid4().hex}-{png.name}"
+        for art in artifacts:
+            ext = art.suffix.lower()
+            content_type = (
+                "image/png"
+                if ext == ".png"
+                else "application/json"
+                if ext == ".json"
+                else mimetypes.guess_type(str(art))[0] or "application/octet-stream"
+            )
+            blob_name = f"charts/{uuid.uuid4().hex}-{art.name}"
             blob = bucket.blob(blob_name)
-            blob.upload_from_filename(str(png), content_type="image/png")
+            blob.upload_from_filename(str(art), content_type=content_type)
             try:
                 signed = blob.generate_signed_url(version="v4", expiration=3600)
                 urls.append(signed)
@@ -131,13 +176,17 @@ def execute_python(code: str) -> str:
     Pre-loaded names available in the user code:
       - `pd`, `np` — pandas/numpy
       - `plt` — matplotlib.pyplot (Agg backend; safe in headless env)
+      - `px`, `go` — plotly.express / plotly.graph_objects
+      - `pio` — plotly.io (whisperops_vercel template already applied)
       - `df` — DataFrame from the configured dataset
-      - `OUT_DIR` — string path; save matplotlib PNGs here. They get
-        auto-uploaded to the agent's GCS bucket and the tool response
-        includes a markdown image link for each.
+      - `OUT_DIR` — string path; save charts here. Both *.png and *.json
+        files are auto-uploaded to the agent's GCS bucket. The tool response
+        includes a markdown image link for each chart URL.
 
-    Use `print(...)` to return numerical results to the caller. Use
-    `plt.savefig(os.path.join(OUT_DIR, "chart.png"))` to publish a chart.
+    Preferred charting: ``fig.write_json(os.path.join(OUT_DIR, "chart.json"))``
+    Fallback charting: ``plt.savefig(os.path.join(OUT_DIR, "chart.png"), dpi=150, bbox_inches="tight")``
+
+    Use `print(...)` to return numerical results to the caller.
 
     Args:
         code: Python source to run (str).
@@ -146,6 +195,8 @@ def execute_python(code: str) -> str:
         A text block with STDOUT, STDERR, exit_code, plus markdown image
         links for any uploaded charts.
     """
+    attrs = {"agent_name": AGENT_NAME_LABEL, "namespace": NAMESPACE}
+
     with tracer.start_as_current_span("sandbox.mcp.execute_python") as span:
         span.set_attribute("dataset.id", DATASET_ID)
         span.set_attribute("agent.bucket", AGENT_BUCKET)
@@ -164,6 +215,7 @@ def execute_python(code: str) -> str:
                 + "\n"
                 + code
             )
+            t0 = time.monotonic()
             try:
                 proc = subprocess.run(
                     ["python", "-c", full_code],
@@ -178,21 +230,41 @@ def execute_python(code: str) -> str:
                     timeout=EXECUTION_TIMEOUT_S,
                 )
             except subprocess.TimeoutExpired:
+                duration = time.monotonic() - t0
                 span.set_attribute("execution.error", "timeout")
+                sandbox_executions.add(1, {**attrs, "outcome": "error"})
+                sandbox_timeouts.add(1, attrs)
+                sandbox_duration.record(duration, attrs)
                 return _format_result("", "", -1, error="timeout", chart_urls=[])
             except Exception as exc:  # noqa: BLE001
+                duration = time.monotonic() - t0
                 span.set_attribute("execution.error", "execution_error")
                 logger.exception("execute_python crashed")
+                sandbox_executions.add(1, {**attrs, "outcome": "error"})
+                sandbox_duration.record(duration, attrs)
                 return _format_result(
                     "", str(exc), -1, error="execution_error", chart_urls=[]
                 )
 
+            duration = time.monotonic() - t0
+            span.set_attribute("execution.exit_code", proc.returncode)
+
+            if proc.returncode in (137, -9):
+                sandbox_oom.add(1, attrs)
+                sandbox_executions.add(1, {**attrs, "outcome": "error"})
+                sandbox_duration.record(duration, attrs)
+            elif proc.returncode == 0:
+                sandbox_executions.add(1, {**attrs, "outcome": "success"})
+                sandbox_duration.record(duration, attrs)
+            else:
+                sandbox_executions.add(1, {**attrs, "outcome": "error"})
+                sandbox_duration.record(duration, attrs)
+
             chart_urls: list[str] = []
             if proc.returncode == 0:
-                chart_urls = _upload_pngs(tmp_path)
+                chart_urls = _upload_charts(tmp_path)
                 span.set_attribute("charts.uploaded", len(chart_urls))
 
-            span.set_attribute("execution.exit_code", proc.returncode)
             return _format_result(
                 proc.stdout, proc.stderr, proc.returncode, error=None, chart_urls=chart_urls
             )

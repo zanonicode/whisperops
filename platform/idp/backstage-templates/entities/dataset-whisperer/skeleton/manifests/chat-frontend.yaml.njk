@@ -1,6 +1,3 @@
-# Per-agent chat UI: a Next.js app that talks directly to kagent's session
-# API and streams responses back to the browser. Scoped to ONE agent (the
-# planner of this scaffolded app) via env vars.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,6 +8,7 @@ metadata:
   labels:
     app: chat-frontend
     whisperops.io/agent: agent-${{ values.agent_name }}
+    whisperops.io/component: chat-frontend
 spec:
   replicas: 1
   selector:
@@ -22,6 +20,7 @@ spec:
       labels:
         app: chat-frontend
         whisperops.io/agent: agent-${{ values.agent_name }}
+        whisperops.io/component: chat-frontend
     spec:
       automountServiceAccountToken: false
       imagePullSecrets:
@@ -29,39 +28,40 @@ spec:
       containers:
         - name: chat-frontend
           image: us-central1-docker.pkg.dev/${{ values.project_id }}/whisperops-images/chat-frontend:latest
-          # :latest + IfNotPresent caches the first pulled digest and never
-          # re-pulls on rebuilds. Always-pull until images move to immutable
-          # content-hash tags.
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 3000
               protocol: TCP
           env:
-            - name: KAGENT_BASE_URL
-              value: "http://kagent-controller.kagent-system.svc.cluster.local:8083"
-            - name: AGENT_NAMESPACE
-              value: "agent-${{ values.agent_name }}"
+            - name: PLANNER_URL
+              value: "http://planner.agent-${{ values.agent_name }}.svc.cluster.local:8080"
             - name: AGENT_NAME
-              value: "planner"
-            - name: USER_ID
-              value: "demo@whisperops"
-            - name: NEXT_PUBLIC_OTEL_ENDPOINT
-              value: "http://otel-collector.observability:4318"
+              value: "${{ values.agent_name }}"
+            - name: STREAMING_ENABLED
+              value: "true"
             - name: NODE_ENV
               value: "production"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability.svc.cluster.local:4318"
+            - name: OTEL_SERVICE_NAME
+              value: "chat-frontend-${{ values.agent_name }}"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "whisperops.agent=${{ values.agent_name }},deployment.environment=production"
           readinessProbe:
             httpGet:
-              path: /
+              path: /api/health
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /
+              path: /api/health
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests:
               cpu: "50m"
@@ -85,6 +85,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
   labels:
     whisperops.io/agent: agent-${{ values.agent_name }}
+    whisperops.io/component: chat-frontend
 spec:
   type: ClusterIP
   selector:

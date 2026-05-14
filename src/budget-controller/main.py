@@ -21,47 +21,11 @@ logging.basicConfig(
 logger = logging.getLogger("budget-controller")
 
 POLL_INTERVAL_S = int(os.getenv("POLL_INTERVAL_S", "60"))
-LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
-LANGFUSE_PUBLIC_KEY = os.environ["LANGFUSE_PUBLIC_KEY"]
-LANGFUSE_SECRET_KEY = os.environ["LANGFUSE_SECRET_KEY"]
 OTEL_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector.observability:4317")
-
-VERTEX_GEMINI_PRICING: dict[str, dict[str, float]] = {
-    "gemini-2.5-flash": {
-        "input": 0.30,
-        "output": 2.50,
-        "cached_input": 0.03,
-    },
-    "gemini-2.5-flash-lite": {
-        "input": 0.10,
-        "output": 0.40,
-        "cached_input": 0.01,
-    },
-    "gemini-2.0-flash": {
-        "input": 0.15,
-        "output": 0.60,
-        "cached_input": 0.0375,
-    },
-    "gemini-2.0-flash-lite": {
-        "input": 0.075,
-        "output": 0.30,
-        "cached_input": 0.01875,
-    },
-}
-
-
-def compute_cost_usd(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cached_input_tokens: int = 0,
-) -> float:
-    p = VERTEX_GEMINI_PRICING[model]
-    return (
-        (input_tokens / 1_000_000) * p["input"]
-        + (output_tokens / 1_000_000) * p["output"]
-        + (cached_input_tokens / 1_000_000) * p["cached_input"]
-    )
+MIMIR_URL = os.getenv(
+    "MIMIR_URL",
+    "http://lgtm-distributed-mimir-nginx.observability.svc:80/prometheus/api/v1",
+)
 
 
 def _setup_telemetry() -> tuple[trace.Tracer, metrics.Meter]:
@@ -84,47 +48,52 @@ def _setup_telemetry() -> tuple[trace.Tracer, metrics.Meter]:
 
 
 tracer, meter = _setup_telemetry()
-budget_80_counter = meter.create_counter(
-    "whisperops.budget.80pct",
-    description="Agents that hit 80% budget threshold",
-)
-budget_100_counter = meter.create_counter(
-    "whisperops.budget.100pct",
-    description="Agents that hit 100% budget threshold (scaled to 0)",
-)
 
 
-def get_langfuse_spend(agent_id: str) -> float:
-    """Sum totalCost across observations whose name embeds the agent's
-    namespace+name (autogen emits `create_agent <ns>__NS__<name>` and
-    similar). agent_id format: `<namespace>/<name>`.
+def poll_killswitch_alerts() -> list[dict]:
+    """Return list of firing BudgetBurnPage alerts from the Mimir ruler API.
 
-    Langfuse API: /api/public/observations supports name substring search
-    via the `name` query param. Pagination via page/limit; we cap at 200
-    observations per poll which covers ~3h of activity at 1 query/min.
+    Each entry has: agent_name, namespace, spend_usd, budget_usd.
+    Replaces the Langfuse REST poll (ADR-Obs-14): Mimir is in-cluster with no
+    external dependency; the firing state reflects the recording-rule math in
+    budget-burn.yaml, not a live Langfuse API call.
     """
-    namespace, name = agent_id.split("/", 1)
-    name_token = f"{namespace.replace('-', '_')}__NS__{name}"
-    total = 0.0
-    page = 1
     with httpx.Client(timeout=10) as http:
-        while page <= 4:
-            response = http.get(
-                f"{LANGFUSE_HOST}/api/public/observations",
-                auth=(LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY),
-                params={"name": name_token, "limit": 50, "page": page},
+        response = http.get(f"{MIMIR_URL}/alerts")
+        response.raise_for_status()
+        payload = response.json()
+
+    out = []
+    for alert in payload.get("data", {}).get("alerts", []):
+        if alert.get("state") != "firing":
+            continue
+        if alert.get("labels", {}).get("action") != "killswitch":
+            continue
+        labels = alert["labels"]
+        out.append({
+            "agent_name": labels.get("agent_name"),
+            "namespace": labels.get("namespace"),
+            "alertname": labels.get("alertname"),
+            "spend_usd": float(alert.get("annotations", {}).get("spend_usd", 0)),
+            "budget_usd": float(alert.get("annotations", {}).get("budget_usd", 0)),
+        })
+    return out
+
+
+def _build_budget_gauge_callbacks(agents: list[dict]):
+    def budget_callbacks(options):
+        return [
+            metrics.Observation(
+                float(a.get("budget_usd", 0)),
+                {
+                    "agent_name": a["agent_name"],
+                    "namespace": a["namespace"],
+                },
             )
-            response.raise_for_status()
-            payload = response.json()
-            for obs in payload.get("data", []):
-                cost = (obs.get("calculatedTotalCost")
-                        or obs.get("usage", {}).get("totalCost")
-                        or 0.0)
-                total += float(cost)
-            if len(payload.get("data", [])) < 50:
-                break
-            page += 1
-    return total
+            for a in agents
+            if a.get("agent_name")
+        ]
+    return budget_callbacks
 
 
 def list_agent_crds(api: k8s_client.CustomObjectsApi) -> list[dict]:
@@ -195,40 +164,65 @@ def run_once(
     custom_api: k8s_client.CustomObjectsApi,
     apps_api: k8s_client.AppsV1Api,
     core_api: k8s_client.CoreV1Api,
+    budget_gauge: metrics.ObservableGauge | None,
 ) -> None:
     agents = list_agent_crds(custom_api)
+
+    agent_budgets = []
     for agent in agents:
         agent_name = agent["metadata"]["name"]
         namespace = agent["metadata"]["namespace"]
         budget_usd = get_budget_usd(agent)
+        if budget_usd is not None:
+            agent_budgets.append({
+                "agent_name": agent_name,
+                "namespace": namespace,
+                "budget_usd": budget_usd,
+            })
 
-        if budget_usd is None:
-            continue
+    try:
+        firing_alerts = poll_killswitch_alerts()
+    except Exception as exc:
+        logger.warning("Failed to poll Mimir alerts: %s", exc)
+        firing_alerts = []
 
-        try:
-            spend = get_langfuse_spend(agent_id=f"{namespace}/{agent_name}")
-        except Exception as exc:
-            logger.warning("Failed to fetch spend for %s/%s: %s", namespace, agent_name, exc)
-            continue
+    for alert in firing_alerts:
+        agent_name = alert["agent_name"]
+        namespace = alert["namespace"]
 
-        ratio = spend / budget_usd if budget_usd > 0 else 0.0
-        attrs = {"agent_namespace": namespace, "agent_name": agent_name}
+        with tracer.start_as_current_span("budget_controller.evaluate_alert") as span:
+            span.set_attribute("agent_name", agent_name or "")
+            span.set_attribute("namespace", namespace or "")
+            span.set_attribute("alertname", alert.get("alertname", ""))
+            span.set_attribute("spend_usd", alert["spend_usd"])
+            span.set_attribute("budget_usd", alert["budget_usd"])
 
-        if ratio >= 1.0:
-            logger.warning("Agent %s/%s exhausted budget (%.2f/%.2f)", namespace, agent_name, spend, budget_usd)
-            budget_100_counter.add(1, attrs)
+            logger.warning(
+                "Budget exhausted: agent=%s namespace=%s spend=%.4f budget=%.4f",
+                agent_name,
+                namespace,
+                alert["spend_usd"],
+                alert["budget_usd"],
+            )
+
             try:
-                emit_warning_event(core_api, namespace, agent_name, f"Budget exhausted: ${spend:.2f} / ${budget_usd:.2f}")
-                scale_deployments_to_zero(apps_api, namespace)
+                emit_warning_event(
+                    core_api,
+                    namespace,
+                    agent_name,
+                    f"BudgetExhausted: ${alert['spend_usd']:.4f} / ${alert['budget_usd']:.4f}",
+                )
             except Exception as exc:
-                logger.error("Failed to enforce 100%% budget for %s/%s: %s", namespace, agent_name, exc)
-        elif ratio >= 0.8:
-            logger.info("Agent %s/%s at 80%% budget (%.2f/%.2f)", namespace, agent_name, spend, budget_usd)
-            budget_80_counter.add(1, attrs)
-            try:
-                emit_warning_event(core_api, namespace, agent_name, f"Budget 80%%: ${spend:.2f} / ${budget_usd:.2f}")
-            except Exception as exc:
-                logger.warning("Failed to emit 80%% event for %s/%s: %s", namespace, agent_name, exc)
+                logger.warning("Failed to emit BudgetExhausted event for %s/%s: %s", namespace, agent_name, exc)
+
+            with tracer.start_as_current_span("budget_controller.killswitch") as ks_span:
+                ks_span.set_attribute("agent_name", agent_name or "")
+                ks_span.set_attribute("namespace", namespace or "")
+                try:
+                    scale_deployments_to_zero(apps_api, namespace)
+                except Exception as exc:
+                    logger.error("Failed to scale %s to zero: %s", namespace, exc)
+                    ks_span.record_exception(exc)
 
 
 def main() -> None:
@@ -241,7 +235,12 @@ def main() -> None:
     apps_api = k8s_client.AppsV1Api()
     core_api = k8s_client.CoreV1Api()
 
-    logger.info("Budget controller started, polling every %ds", POLL_INTERVAL_S)
+    budget_gauge = meter.create_observable_gauge(
+        "whisperops.agent.budget.usd",
+        description="Per-agent USD budget from Agent CR whisperops.io/budget-usd annotation",
+    )
+
+    logger.info("Budget controller started (Mimir PromQL mode), polling every %ds", POLL_INTERVAL_S)
 
     while True:
         with tracer.start_as_current_span("budget_controller.run_once") as span:
@@ -249,7 +248,7 @@ def main() -> None:
             span.set_attribute("gen_ai.system", "gcp.vertex_ai")
             span.set_attribute("gen_ai.request.model", "gemini-2.5-flash")
             try:
-                run_once(custom_api, apps_api, core_api)
+                run_once(custom_api, apps_api, core_api, budget_gauge)
             except Exception as exc:
                 logger.error("Poll cycle failed: %s", exc, exc_info=True)
         time.sleep(POLL_INTERVAL_S)

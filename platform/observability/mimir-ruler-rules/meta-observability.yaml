@@ -1,0 +1,94 @@
+# Mimir ruler ConfigMap — meta-observability: OTel Collector self-metrics alerts.
+# Alerts for: collector down, queue saturated, export failure rate, ruler eval failures.
+# ADR-Obs-7 split: smallest ConfigMap (~50 KiB), operational purpose = platform health.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-ruler-meta-observability
+  namespace: observability
+  labels:
+    mimir-ruler-rules: "1"
+data:
+  meta-observability.yaml: |
+    groups:
+      # ─── B.1 — OTel Collector availability ──────────────────────────────────
+      - name: otel_collector_health
+        interval: 30s
+        rules:
+          - record: otelcol:availability:up
+            expr: |
+              up{job="opentelemetry-collector"}
+
+          - alert: OTelCollectorDown
+            expr: up{job="opentelemetry-collector"} == 0
+            for: 2m
+            labels:
+              severity: page
+              slo: collector_availability
+            annotations:
+              summary: "OTel Collector is down — traces, logs, and metrics not flowing"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── B.2 — OTel Collector queue saturation ───────────────────────────────
+      - name: otel_collector_queue
+        interval: 30s
+        rules:
+          - record: otelcol:queue_capacity_ratio
+            expr: |
+              otelcol_exporter_queue_size / otelcol_exporter_queue_capacity
+
+          - alert: OTelCollectorQueueSaturated
+            expr: otelcol:queue_capacity_ratio > 0.80
+            for: 5m
+            labels:
+              severity: warn
+              slo: collector_queue
+            annotations:
+              summary: "OTel Collector export queue > 80% full — data loss risk"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── B.3 — OTel Collector export failure rate ────────────────────────────
+      - name: otel_collector_exports
+        interval: 30s
+        rules:
+          - record: otelcol:export_failure_rate:rate_5m
+            expr: |
+              sum(rate(otelcol_exporter_send_failed_spans_total[5m]))
+              /
+              (
+                sum(rate(otelcol_exporter_sent_spans_total[5m]))
+                + sum(rate(otelcol_exporter_send_failed_spans_total[5m]))
+              )
+
+          - alert: OTelCollectorExportFailing
+            expr: otelcol:export_failure_rate:rate_5m > 0.05
+            for: 5m
+            labels:
+              severity: warn
+            annotations:
+              summary: "OTel Collector span export failure rate > 5%"
+
+      # ─── Mimir ruler evaluation failures ────────────────────────────────────
+      - name: mimir_ruler_health
+        interval: 60s
+        rules:
+          - alert: MimirRulerEvaluationFailure
+            expr: rate(cortex_ruler_evaluation_failures_total[5m]) > 0
+            for: 5m
+            labels:
+              severity: warn
+            annotations:
+              summary: "Mimir ruler has evaluation failures — check PromQL syntax in ruler ConfigMaps"
+
+      # ─── Loki ingestion rejection rate ──────────────────────────────────────
+      - name: loki_ingestion
+        interval: 60s
+        rules:
+          - alert: LokiIngestionRejectionHigh
+            expr: |
+              rate(loki_discarded_samples_total[5m]) > 10
+            for: 5m
+            labels:
+              severity: warn
+            annotations:
+              summary: "Loki is rejecting log samples — possible label cardinality limit hit"

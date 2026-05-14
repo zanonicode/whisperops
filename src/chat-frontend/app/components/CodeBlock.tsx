@@ -1,35 +1,53 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ComponentPropsWithoutRef } from 'react';
+import { Copy, Check } from 'lucide-react';
+import { cn } from '@/lib/cn';
 
-interface CodeBlockProps {
-  code: string;
+interface CodeBlockProps extends ComponentPropsWithoutRef<'code'> {
   language?: string;
 }
 
-export default function CodeBlock({ code, language = 'python' }: CodeBlockProps) {
+export function CodeBlock({ language, children, className, ...rest }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const code = typeof children === 'string' ? children : String(children ?? '');
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable
+    }
   };
 
   return (
-    <div className="my-4 relative group">
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-100 dark:bg-gray-800 rounded-t-lg border border-gray-200 dark:border-gray-700">
-        <span className="text-xs text-gray-500 dark:text-gray-400 font-mono">{language}</span>
-        <button
-          onClick={handleCopy}
-          className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-        >
-          {copied ? 'Copied!' : 'Copy'}
-        </button>
-      </div>
-      <pre className="overflow-x-auto p-4 bg-gray-50 dark:bg-gray-900 border border-t-0 border-gray-200 dark:border-gray-700 rounded-b-lg">
-        <code className="text-sm font-mono text-gray-800 dark:text-gray-200">{code}</code>
+    <div className="group relative my-3">
+      <pre
+        className={cn(
+          'overflow-x-auto rounded-xl bg-white/[0.04] ring-1 ring-white/10 p-4',
+          'text-sm font-mono text-foreground/90',
+          className
+        )}
+      >
+        {language && (
+          <span className="mb-2 block text-xs text-muted-foreground">{language}</span>
+        )}
+        <code {...rest}>{children}</code>
       </pre>
+      <button
+        onClick={handleCopy}
+        aria-label="Copy code"
+        className={cn(
+          'absolute right-3 top-3 rounded-md p-1.5 opacity-0 transition-opacity',
+          'group-hover:opacity-100 hover:bg-white/10',
+          'text-muted-foreground hover:text-foreground',
+          'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        )}
+      >
+        {copied ? <Check className="size-4 text-emerald-400" /> : <Copy className="size-4" />}
+      </button>
     </div>
   );
 }

@@ -1,0 +1,189 @@
+{
+  "title": "Agent ${{values.agent_name}} — Detail (${{values.dataset_id}})",
+  "uid": "agent-${{values.agent_name}}-detail",
+  "tags": ["agent", "${{values.agent_name}}", "${{values.dataset_id}}"],
+  "description": "Per-agent observability dashboard. Agent: ${{values.agent_name}}, Dataset: ${{values.dataset_id}}, Budget: ${{values.budget_usd}} USD.",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "agent",
+        "type": "constant",
+        "label": "Agent",
+        "current": {
+          "selected": true,
+          "text": "${{values.agent_name}}",
+          "value": "${{values.agent_name}}"
+        },
+        "hide": 2,
+        "query": "${{values.agent_name}}"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Availability (chat-frontend, this agent)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.98 },
+              { "color": "green", "value": 0.99 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(http_requests_total{service=\"chat-frontend\",agent_name=\"$agent\",code!~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"chat-frontend\",agent_name=\"$agent\"}[5m]))",
+          "legendFormat": "availability"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "TTFT p95 (this agent, s)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(chat_frontend_ttft_seconds_bucket{agent_name=\"$agent\"}[5m])))",
+          "legendFormat": "p95 TTFT"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Budget Utilization %",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.8 },
+              { "color": "red", "value": 1.0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "whisperops_spend_usd:cumulative{agent_name=\"$agent\"} / on(agent_name) whisperops_agent_budget_usd{agent_name=\"$agent\"}",
+          "legendFormat": "budget used"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Apdex Score (T=10s)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "green", "value": 0.9 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "chat_frontend:apdex_score:rate5m{agent_name=\"$agent\"}",
+          "legendFormat": "apdex"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Sandbox executions by outcome",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (outcome) (rate(sandbox_executions_total{namespace=\"$agent\"}[5m]))",
+          "legendFormat": "{{ outcome }}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Token usage (input / output / cached)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "rate(whisperops_tokens_input_total{agent_name=\"$agent\"}[5m]) * 60",
+          "legendFormat": "input/min"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "rate(whisperops_tokens_output_total{agent_name=\"$agent\"}[5m]) * 60",
+          "legendFormat": "output/min"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "rate(whisperops_tokens_cached_input_total{agent_name=\"$agent\"}[5m]) * 60",
+          "legendFormat": "cached/min"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Pod logs (this agent namespace, last 1h)",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{namespace=\"$agent\"}",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showTime": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Trace search (this agent)",
+      "type": "traces",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "{resource.agent_name=\"$agent\"}"
+        }
+      ]
+    }
+  ]
+}

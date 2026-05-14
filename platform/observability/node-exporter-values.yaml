@@ -1,0 +1,31 @@
+# prometheus-node-exporter chart values for whisperops.
+# Chart: prometheus-community/prometheus-node-exporter v4.55.0 (ADR-Obs-11, Rule #10).
+# DaemonSet per node; scrape interval 30s; hostNetwork for accurate network metrics.
+hostNetwork: true
+hostPID: true
+
+service:
+  port: 9100
+  targetPort: 9100
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9100"
+
+prometheus:
+  monitor:
+    enabled: false
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+tolerations:
+  - operator: Exists
+
+extraArgs:
+  - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
+  - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|sysfs|tracefs)$

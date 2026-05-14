@@ -1,96 +1,66 @@
-import ChartEmbed from './ChartEmbed';
-import CodeBlock from './CodeBlock';
+'use client';
 
-interface ChatMessage {
+import { motion } from 'motion/react';
+import { cn } from '@/lib/cn';
+import { MarkdownContent } from './MarkdownContent';
+import { StatusPill } from './StatusPill';
+
+export type MessageRole = 'user' | 'assistant';
+export type MessageStatus = 'pending' | 'streaming' | 'completed' | 'failed';
+
+export interface MessageData {
   id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  chartUrls?: string[];
-  codeBlocks?: string[];
+  role: MessageRole;
+  text: string;
+  status: MessageStatus;
+  author?: string;
 }
 
 interface MessageProps {
-  message: ChatMessage;
+  msg: MessageData;
 }
 
-function extractChartUrls(content: string): string[] {
-  const urls: string[] = [];
-  const imgRegex = /!\[.*?\]\((https?:\/\/[^\s)]+)\)/g;
-  const linkRegex = /\[Interactive Chart\]\((https?:\/\/[^\s)]+)\)/g;
-  let match;
-
-  while ((match = imgRegex.exec(content)) !== null) {
-    urls.push(match[1]);
-  }
-  while ((match = linkRegex.exec(content)) !== null) {
-    urls.push(match[1]);
-  }
-  return urls;
-}
-
-function extractCodeBlocks(content: string): Array<{ code: string; language: string }> {
-  const blocks: Array<{ code: string; language: string }> = [];
-  const regex = /```(\w+)?\n([\s\S]*?)```/g;
-  let match;
-
-  while ((match = regex.exec(content)) !== null) {
-    blocks.push({ language: match[1] ?? 'text', code: match[2] });
-  }
-  return blocks;
-}
-
-function renderMarkdownContent(content: string): React.ReactNode {
-  const chartUrls = extractChartUrls(content);
-  const codeBlocks = extractCodeBlocks(content);
-
-  let processed = content;
-  processed = processed.replace(/!\[.*?\]\(https?:\/\/[^\s)]+\)/g, '');
-  processed = processed.replace(/\[Interactive Chart\]\(https?:\/\/[^\s)]+\)/g, '');
-  processed = processed.replace(/```(\w+)?\n[\s\S]*?```/g, '');
-
-  const lines = processed.split('\n').filter((l) => l.trim() !== '');
+export function Message({ msg }: MessageProps) {
+  const isUser = msg.role === 'user';
+  const isStreaming = msg.status === 'streaming' || msg.status === 'pending';
 
   return (
-    <>
-      {lines.map((line, i) => (
-        <p key={i} className="mb-2 leading-relaxed">
-          {line}
-        </p>
-      ))}
-      {chartUrls.map((url, i) => (
-        <ChartEmbed key={`chart-${i}`} url={url} alt={`Chart ${i + 1}`} />
-      ))}
-      {codeBlocks.map((block, i) => (
-        <CodeBlock key={`code-${i}`} code={block.code} language={block.language} />
-      ))}
-    </>
-  );
-}
-
-export default function Message({ message }: MessageProps) {
-  const isUser = message.role === 'user';
-
-  return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: 'easeOut' }}
+      className={cn('flex w-full gap-3', isUser ? 'justify-end' : 'justify-start')}
+    >
       <div
-        className={`max-w-3xl w-full rounded-2xl px-4 py-3 ${
+        className={cn(
+          'max-w-[85%] rounded-2xl px-4 py-3',
           isUser
-            ? 'bg-blue-600 text-white ml-12'
-            : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100 mr-12'
-        }`}
+            ? 'bg-accent text-accent-foreground'
+            : 'bg-white/[0.03] ring-1 ring-white/10'
+        )}
       >
-        {isUser ? (
-          <p>{message.content}</p>
-        ) : (
-          <div className="prose dark:prose-invert max-w-none">
-            {message.content ? (
-              renderMarkdownContent(message.content)
-            ) : (
-              <span className="inline-block animate-pulse">...</span>
-            )}
+        {!isUser && (
+          <div className="mb-1">
+            <StatusPill author={msg.author} visible={isStreaming} />
           </div>
         )}
+        <div
+          aria-live={isStreaming ? 'polite' : undefined}
+          className="prose prose-invert max-w-none text-[15px] leading-relaxed"
+        >
+          {msg.text ? (
+            <MarkdownContent text={msg.text} />
+          ) : isStreaming ? (
+            <span className="animate-pulse text-muted-foreground">…</span>
+          ) : null}
+        </div>
+        {msg.status === 'failed' && (
+          <p className="mt-2 text-xs text-red-400">
+            This message may be incomplete. You can retry.
+          </p>
+        )}
       </div>
-    </div>
+    </motion.div>
   );
 }

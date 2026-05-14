@@ -1,0 +1,95 @@
+{
+  "title": "D2 — LLM Platform Overview",
+  "uid": "whisperops-llm-overview",
+  "tags": ["llm", "platform", "tokens", "cost"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "agent_name",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "mimir" },
+        "query": "label_values(http_requests_total{service=\"chat-frontend\"}, agent_name)",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "multi": true,
+        "label": "Agent"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Total Requests/min (all agents)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(http_requests_total{service=\"chat-frontend\",agent_name=~\"$agent_name\"}[5m])) * 60",
+          "legendFormat": "req/min"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error Rate %",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "100 * sum(rate(http_requests_total{service=\"chat-frontend\",agent_name=~\"$agent_name\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{service=\"chat-frontend\",agent_name=~\"$agent_name\"}[5m]))",
+          "legendFormat": "error %"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Tokens Input/min",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (agent_name) (rate(whisperops_tokens_input_total{agent_name=~\"$agent_name\"}[5m])) * 60",
+          "legendFormat": "input: {{ agent_name }}"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (agent_name) (rate(whisperops_tokens_output_total{agent_name=~\"$agent_name\"}[5m])) * 60",
+          "legendFormat": "output: {{ agent_name }}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Token Cache Hit Rate %",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "100 * whisperops:token_cache_hit_rate:rate_5m{agent_name=~\"$agent_name\"}",
+          "legendFormat": "cache hit %: {{ agent_name }}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "TTFT p95 (all agents)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "chat_frontend:ttft_p95:rate_5m{agent_name=~\"$agent_name\"}",
+          "legendFormat": "p95 TTFT: {{ agent_name }}"
+        }
+      ]
+    }
+  ]
+}

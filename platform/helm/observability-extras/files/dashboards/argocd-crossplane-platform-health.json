@@ -1,0 +1,103 @@
+{
+  "title": "D9 — ArgoCD + Crossplane Platform Health",
+  "uid": "whisperops-platform-health",
+  "tags": ["argocd", "crossplane", "kyverno", "platform"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "60s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "ArgoCD App Sync Status",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(argocd_app_info{sync_status=\"Synced\"})",
+          "legendFormat": "Synced"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "ArgoCD App Health Status",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(argocd_app_info{health_status=\"Healthy\"})",
+          "legendFormat": "Healthy"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Crossplane Providers Healthy",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(crossplane_provider_healthy)",
+          "legendFormat": "Healthy Providers"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "ArgoCD Sync History (all apps)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (name, sync_status) (argocd_app_info)",
+          "legendFormat": "{{ name }}: {{ sync_status }}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Crossplane Reconcile Errors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (gvk) (rate(crossplane_managed_resource_exists_not_found_total[5m]))",
+          "legendFormat": "not-found: {{ gvk }}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Kyverno Policy Violations (rate/5m)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (policy_name) (rate(kyverno_policy_results_total{rule_result=\"fail\"}[5m]))",
+          "legendFormat": "violation: {{ policy_name }}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Platform Logs (last 30m, level=error|warn)",
+      "type": "logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{namespace=~\"argocd|crossplane-system|kyverno\"} |= \"error\" or {namespace=~\"argocd|crossplane-system|kyverno\"} |= \"warn\"",
+          "legendFormat": ""
+        }
+      ]
+    }
+  ]
+}

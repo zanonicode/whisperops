@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_TELEMETRY_DISABLED: '1',
   },
+  serverExternalPackages: ['@opentelemetry/sdk-node', '@opentelemetry/instrumentation'],
 };
 
 export default nextConfig;

@@ -1,19 +1,16 @@
 # OpenTelemetry Collector pipeline for whisperops.
 #
-# Receives OTLP from chat-frontend (Node), sandbox (FastAPI), and any
-# future agent-side instrumentation. Pipes traces -> Tempo, logs -> Loki,
-# metrics -> Mimir.
+# Receives OTLP from chat-frontend (Node), sandbox (FastAPI), budget-controller,
+# and platform components. Fans out:
+#   traces  → Tempo (durable GCS-backed) + Langfuse self-hosted (OTLP/HTTP)
+#   metrics → Mimir (prometheusremotewrite) + Prometheus scrapes for node/kube/platform
+#   logs    → Loki (from SDK OTLP logs; Alloy DaemonSet handles k8s stdout separately)
 #
-# Per-agent attribution is added by the resource processor based on the
-# pod's namespace label `whisperops.io/agent`. Spans coming from any
-# pod in an agent-* namespace get the `agent.id` resource attribute.
+# Per-agent attribution added via k8sattributes processor (whisperops.io/agent pod label).
 mode: deployment
 image:
   repository: otel/opentelemetry-collector-contrib
 
-# Resource limits — chart warned `useGOMEMLIMIT enabled but limits not set`.
-# Setting limit-memory unblocks GOMEMLIMIT and prevents the collector from
-# being OOM-killed under burst load.
 resources:
   requests:
     cpu: "50m"
@@ -22,7 +19,6 @@ resources:
     cpu: "500m"
     memory: "512Mi"
 
-# Open the OTLP endpoint cluster-wide (default behavior, but explicit).
 ports:
   otlp:
     enabled: true
@@ -44,16 +40,61 @@ config:
         http:
           endpoint: 0.0.0.0:4318
           cors:
-            # Browser OTel sender (chat-frontend page) ships traces over CORS.
             allowed_origins:
               - "*"
+
+    # Prometheus scrape receivers for platform components
+    prometheus:
+      config:
+        scrape_configs:
+          - job_name: node-exporter
+            scrape_interval: 30s
+            static_configs:
+              - targets:
+                  - prometheus-node-exporter.observability.svc:9100
+
+          - job_name: kube-state-metrics
+            scrape_interval: 30s
+            static_configs:
+              - targets:
+                  - kube-state-metrics.observability.svc:8080
+
+          - job_name: kagent
+            scrape_interval: 30s
+            static_configs:
+              - targets:
+                  - kagent.kagent-system.svc:8080
+
+          - job_name: argocd
+            scrape_interval: 60s
+            static_configs:
+              - targets:
+                  - argocd-metrics.argocd.svc:8082
+                  - argocd-server-metrics.argocd.svc:8083
+
+          - job_name: crossplane
+            scrape_interval: 60s
+            static_configs:
+              - targets:
+                  - crossplane.crossplane-system.svc:8080
+
+          - job_name: kyverno
+            scrape_interval: 60s
+            static_configs:
+              - targets:
+                  - kyverno-svc-metrics.kyverno.svc:8000
+
+          - job_name: opentelemetry-collector
+            scrape_interval: 30s
+            static_configs:
+              - targets:
+                  - localhost:8888
 
   processors:
     batch:
       timeout: 5s
       send_batch_size: 512
-    # Pull pod labels into resource attributes — k8s.pod.labels.* will
-    # carry our `whisperops.io/agent` and `whisperops.io/role`.
+
     k8sattributes:
       auth_type: serviceAccount
       passthrough: false
@@ -65,6 +106,9 @@ config:
           - k8s.deployment.name
         labels:
           - tag_name: agent.id
+            key: whisperops.io/agent
+            from: pod
+          - tag_name: agent_name
             key: whisperops.io/agent
             from: pod
           - tag_name: agent.role
@@ -79,64 +123,81 @@ config:
               name: k8s.pod.name
         - sources:
             - from: connection
+
     resource:
       attributes:
         - action: upsert
           key: deployment.environment
           value: dev
-    # Truncate every span attribute value to 2048 bytes. Sandbox spans carry
-    # user Python source as an attribute, which trips the OTel collector
-    # "too many attributes" warning and bloats Tempo/Langfuse storage.
-    # Implemented via a `transform` processor with OTTL `truncate_all` because
-    # `config.attribute_limits.max_attribute_value_size` is not a valid OTel
-    # collector root key.
+
     transform/truncate_attrs:
       trace_statements:
         - context: span
           statements:
             - truncate_all(attributes, 2048)
 
+    # Promote trace_id/span_id and service label attributes for Loki ingestion
+    attributes/loki:
+      actions:
+        - key: loki.attribute.labels
+          value: trace_id,span_id,service.name,agent_name,namespace
+          action: insert
+
+    resource/loki:
+      attributes:
+        - key: loki.resource.labels
+          value: service.name,agent_name,namespace
+          action: insert
+
   exporters:
     debug:
       verbosity: basic
-    # We deploy a SECOND Tempo (monolithic, single-binary) alongside
-    # lgtm-distributed because the distributed Tempo's distributor enforces
-    # a "min 2 live ingester replicas" check that can't be turned off in
-    # single-node mode (replication_factor: 1 doesn't help — it's a
-    # separate ring health check). The monolithic chart works on single
-    # node out of the box. Both Tempos write to local storage; only this
-    # one is wired into the OTel pipeline. lgtm-distributed Tempo remains
-    # for future multi-node use.
+
     otlp/tempo:
       endpoint: tempo-mono.observability.svc.cluster.local:4317
       tls:
         insecure: true
 
-    # Dual-ship traces to Langfuse Cloud (US region) when the
-    # langfuse-credentials Secret is mounted. Langfuse accepts OTLP/HTTP at
-    # /api/public/otel with Basic auth (public:secret base64). The auth
-    # header is built from env vars sourced from the Secret — see extraEnvs
-    # below. If the Secret is absent the env vars are empty and the
-    # exporter still loads but every export 401s and gets dropped (debug
-    # exporter still captures locally so no data loss in Tempo).
-    otlphttp/langfuse:
-      endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
-      headers:
-        Authorization: "Basic ${env:LANGFUSE_BASIC_AUTH}"
+    # otlphttp/langfuse exporter REMOVED — Langfuse Cloud no longer used after
+    # ADR-Obs-3 self-host migration. Re-add pointed at the in-cluster Langfuse
+    # OTLP endpoint (http://langfuse-web.observability.svc:3000/api/public/otel)
+    # once self-hosted Langfuse is verified healthy. Traces still flow to Tempo.
+
+    prometheusremotewrite:
+      endpoint: http://lgtm-distributed-mimir-nginx.observability.svc:80/api/v1/push
+      tls:
+        insecure: true
+
+    # Loki accepts OTLP natively since v3.0; the legacy `loki` exporter type
+    # was deprecated and removed in OTel Collector contrib v0.123+. Use
+    # otlphttp pointed at Loki's /otlp ingest path instead.
+    otlphttp/loki:
+      endpoint: http://lgtm-distributed-loki-gateway.observability.svc:80/otlp
+      tls:
+        insecure: true
 
   service:
     telemetry:
       logs:
         level: info
+      metrics:
+        address: 0.0.0.0:8888
     pipelines:
       traces:
         receivers: [otlp]
         processors: [k8sattributes, resource, transform/truncate_attrs, batch]
-        exporters: [otlp/tempo, otlphttp/langfuse, debug]
-      # Logs and metrics pipelines deferred — first prove traces work end-to-end.
+        exporters: [otlp/tempo, debug]
 
-# Pull Langfuse credentials into the collector pod's env. Secret name and
-# keys match what we materialize at deploy-time in the observability ns.
+      metrics:
+        receivers: [otlp, prometheus]
+        processors: [k8sattributes, resource, batch]
+        exporters: [prometheusremotewrite, debug]
+
+      logs:
+        receivers: [otlp]
+        processors: [k8sattributes, resource, resource/loki, attributes/loki, batch]
+        exporters: [otlphttp/loki, debug]
+
 extraEnvs:
   - name: LANGFUSE_OTLP_ENDPOINT
     valueFrom:
@@ -151,12 +212,11 @@ extraEnvs:
         key: LANGFUSE_BASIC_AUTH
         optional: true
 
-# k8sattributes processor needs RBAC to read pods cluster-wide.
 clusterRole:
   create: true
   rules:
     - apiGroups: [""]
-      resources: ["pods", "namespaces"]
+      resources: ["pods", "namespaces", "nodes"]
       verbs: ["get", "list", "watch"]
     - apiGroups: ["apps"]
       resources: ["replicasets", "deployments"]
@@ -164,6 +224,3 @@ clusterRole:
 
 serviceAccount:
   create: true
-
-# Send the chart's default 'metrics' pipeline (which scrapes the collector
-# itself) to debug only — Mimir wiring is a separate task.

@@ -7,14 +7,32 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
-  source:
-    repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/whisperops/whisperops.git
-    targetRevision: HEAD
-    path: platform/helm/observability-extras
-    helm:
-      releaseName: observability-extras
-      valueFiles:
-        - values.yaml
+  sources:
+    # Source 1: observability-extras Helm chart (dashboards, datasources, ConfigMap template)
+    - repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/whisperops/whisperops.git
+      targetRevision: HEAD
+      path: platform/helm/observability-extras
+      helm:
+        releaseName: observability-extras
+        valueFiles:
+          - values.yaml
+
+    # Source 2: Mimir ruler ConfigMaps (4 files; sync-wave 5 so Mimir is up first)
+    - repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/whisperops/whisperops.git
+      targetRevision: HEAD
+      directory:
+        recurse: false
+        include: "*.yaml"
+      path: platform/observability/mimir-ruler-rules
+
+    # Source 3: Grafana Stackdriver datasource ConfigMap
+    - repoURL: http://my-gitea-http.gitea.svc.cluster.local:3000/whisperops/whisperops.git
+      targetRevision: HEAD
+      directory:
+        recurse: false
+        include: "grafana-stackdriver-datasource.yaml"
+      path: platform/observability
+
   destination:
     server: https://kubernetes.default.svc
     namespace: observability

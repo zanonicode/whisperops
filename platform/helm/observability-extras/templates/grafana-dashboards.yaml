@@ -7,14 +7,20 @@ metadata:
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     grafana_dashboard: "1"
-  annotations:
-    grafana_dashboard_folder: "whisperops"
 data:
-  platform-health.json: |-
-    {{ .Files.Get "files/dashboards/platform-health.json" | nindent 4 }}
-  agent-cost.json: |-
-    {{ .Files.Get "files/dashboards/agent-cost.json" | nindent 4 }}
-  agent-performance.json: |-
-    {{ .Files.Get "files/dashboards/agent-performance.json" | nindent 4 }}
-  sandbox-execution.json: |-
-    {{ .Files.Get "files/dashboards/sandbox-execution.json" | nindent 4 }}
+  cluster-health.json: |-
+    {{ .Files.Get "files/dashboards/cluster-health.json" | nindent 4 }}
+  llm-platform-overview.json: |-
+    {{ .Files.Get "files/dashboards/llm-platform-overview.json" | nindent 4 }}
+  slo-compliance.json: |-
+    {{ .Files.Get "files/dashboards/slo-compliance.json" | nindent 4 }}
+  service-map.json: |-
+    {{ .Files.Get "files/dashboards/service-map.json" | nindent 4 }}
+  cost-and-tokens.json: |-
+    {{ .Files.Get "files/dashboards/cost-and-tokens.json" | nindent 4 }}
+  red-method.json: |-
+    {{ .Files.Get "files/dashboards/red-method.json" | nindent 4 }}
+  apdex-per-agent.json: |-
+    {{ .Files.Get "files/dashboards/apdex-per-agent.json" | nindent 4 }}
+  argocd-crossplane-platform-health.json: |-
+    {{ .Files.Get "files/dashboards/argocd-crossplane-platform-health.json" | nindent 4 }}

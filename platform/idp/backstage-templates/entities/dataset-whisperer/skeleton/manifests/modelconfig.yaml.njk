@@ -1,3 +1,10 @@
+# Single model for all three agents — Pro everywhere.
+# BRAINSTORM D7 reserved the Pro escalation if Flash reliability failed BUILD
+# validation. It did (~80% malformed function_call rate on simple aggregations).
+# After consolidating: planner+analyst+writer all use Pro. Cost ~10x Flash but
+# acceptable for POC; the function_call reliability + better prose quality
+# justifies it across the chain. To revert to mixed-tier, split into `model`
+# (Flash) + `model-pro` (Pro) and point only the analyst at `model-pro`.
 apiVersion: kagent.dev/v1alpha2
 kind: ModelConfig
 metadata:
@@ -7,7 +14,7 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   provider: GeminiVertexAI
-  model: gemini-2.5-flash
+  model: gemini-2.5-pro
   apiKeySecret: kagent-vertex-credentials
   apiKeySecretKey: credentials.json
   geminiVertexAI:

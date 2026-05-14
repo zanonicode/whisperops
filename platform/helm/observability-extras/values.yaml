@@ -1,58 +1,18 @@
-# PrometheusRule CR is gated because the LGTM Mimir deployment does not
-# include the prometheus-operator stack — the CRD `monitoring.coreos.com/v1`
-# is not installed by default. Enable once prometheus-operator (or
-# kube-prometheus-stack) is added; otherwise the rules can be loaded as a
-# Mimir ruler ConfigMap separately.
-prometheusOperator:
-  enabled: false
-
-otelCollector:
-  config:
-    receivers:
-      otlp:
-        protocols:
-          grpc:
-            endpoint: 0.0.0.0:4317
-          http:
-            endpoint: 0.0.0.0:4318
-    processors:
-      batch: {}
-      memory_limiter:
-        check_interval: 1s
-        limit_mib: 200
-    exporters:
-      otlp/tempo:
-        endpoint: tempo.observability:4317
-        tls:
-          insecure: true
-      otlphttp/langfuse:
-        endpoint: "${LANGFUSE_OTLP_ENDPOINT}"
-        headers:
-          Authorization: "Basic ${LANGFUSE_BASIC_AUTH}"
-    service:
-      pipelines:
-        traces:
-          receivers: [otlp]
-          processors: [memory_limiter, batch]
-          exporters: [otlp/tempo, otlphttp/langfuse]
-        metrics:
-          receivers: [otlp]
-          processors: [memory_limiter, batch]
-          exporters: [otlp/tempo]
-
-langfuse:
-  secretName: langfuse-credentials
-  otlpEndpointKey: LANGFUSE_OTLP_ENDPOINT
-  basicAuthKey: LANGFUSE_BASIC_AUTH
+# observability-extras chart values.
+# PrometheusOperator gate removed (ADR-Obs-16 — dead code; Mimir ruler ConfigMaps replace it).
+# mimirRulerRules enabled: the 4 ConfigMaps in platform/observability/mimir-ruler-rules/
+# are applied by the ArgoCD observability app, not this chart.
+mimirRulerRules:
+  enabled: true
 
 grafana:
   dashboardsConfigMap: whisperops-dashboards
   datasources:
     tempo:
-      url: http://tempo.observability:3100
+      url: http://tempo-mono.observability.svc:3100
     loki:
-      url: http://loki-gateway.observability:80
+      url: http://lgtm-distributed-loki-gateway.observability.svc:80
     mimir:
-      url: http://mimir-nginx.observability:80/prometheus
-    infinity:
-      langfuseUrl: "https://cloud.langfuse.com"
+      url: http://lgtm-distributed-mimir-nginx.observability.svc:80/prometheus
+    stackdriver:
+      uid: stackdriver

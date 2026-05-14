@@ -1,0 +1,192 @@
+# Mimir ruler ConfigMap — Platform SLOs (Tier 1/2/3 SLIs + MWMBR alerts + Apdex).
+# Discovered by Mimir ruler via label mimir-ruler-rules=1 (ADR-Obs-7 split).
+# Recording rule + MWMBR alert pattern per Pattern 1 in DESIGN §5.
+# Apdex T=10s, tolerable=40s (→ le=30 bucket approximation) per ADR-Obs-12.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-ruler-platform-slos
+  namespace: observability
+  labels:
+    mimir-ruler-rules: "1"
+data:
+  platform-slos.yaml: |
+    groups:
+      # ─── T1.1 — chat-frontend availability SLI ─────────────────────────────
+      - name: chat_frontend_availability
+        interval: 30s
+        rules:
+          - record: chat_frontend:availability:ratio_rate_5m
+            expr: |
+              (
+                sum by (agent_name) (rate(http_requests_total{service="chat-frontend",code!~"5.."}[5m]))
+              )
+              /
+              (
+                sum by (agent_name) (rate(http_requests_total{service="chat-frontend"}[5m]))
+              )
+
+          - record: chat_frontend:availability:ratio_rate_1h
+            expr: |
+              sum by (agent_name) (rate(http_requests_total{service="chat-frontend",code!~"5.."}[1h]))
+              /
+              sum by (agent_name) (rate(http_requests_total{service="chat-frontend"}[1h]))
+
+          - record: chat_frontend:availability:ratio_rate_6h
+            expr: |
+              sum by (agent_name) (rate(http_requests_total{service="chat-frontend",code!~"5.."}[6h]))
+              /
+              sum by (agent_name) (rate(http_requests_total{service="chat-frontend"}[6h]))
+
+          - alert: SLO_ChatFrontendAvailabilityFast
+            expr: |
+              (
+                (1 - chat_frontend:availability:ratio_rate_5m) > (14.4 * (1 - 0.99))
+              )
+              and
+              (
+                (1 - chat_frontend:availability:ratio_rate_1h) > (14.4 * (1 - 0.99))
+              )
+            for: 2m
+            labels:
+              severity: page
+              slo: chat_frontend_availability
+              window: 5m_1h
+            annotations:
+              summary: "chat-frontend availability burn rate 14.4x (budget exhausted in ~2d)"
+              dashboard: "https://grafana/d/slo-compliance"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+          - alert: SLO_ChatFrontendAvailabilitySlow
+            expr: |
+              (
+                (1 - chat_frontend:availability:ratio_rate_5m) > (6 * (1 - 0.99))
+              )
+              and
+              (
+                (1 - chat_frontend:availability:ratio_rate_1h) > (6 * (1 - 0.99))
+              )
+            for: 15m
+            labels:
+              severity: warn
+              slo: chat_frontend_availability
+              window: 5m_1h
+            annotations:
+              summary: "chat-frontend availability slow burn rate 6x"
+              dashboard: "https://grafana/d/slo-compliance"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── T1.2 — chat-frontend TTFT p95 SLI ─────────────────────────────────
+      - name: chat_frontend_ttft
+        interval: 30s
+        rules:
+          - record: chat_frontend:ttft_p95:rate_5m
+            expr: |
+              histogram_quantile(0.95,
+                sum by (agent_name, le) (rate(chat_frontend_ttft_seconds_bucket[5m]))
+              )
+
+          - record: chat_frontend:ttft_slo_ratio:rate_5m
+            expr: |
+              sum by (agent_name) (rate(chat_frontend_ttft_seconds_bucket{le="10"}[5m]))
+              /
+              sum by (agent_name) (rate(chat_frontend_ttft_seconds_count[5m]))
+
+          - alert: SLO_ChatFrontendTTFTFast
+            expr: |
+              chat_frontend:ttft_slo_ratio:rate_5m < 0.95
+            for: 5m
+            labels:
+              severity: warn
+              slo: chat_frontend_ttft
+            annotations:
+              summary: "chat-frontend TTFT p95 > 10s (SLO target: 95% ≤ 10s)"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── T1.3 — chat-frontend e2e latency SLI ──────────────────────────────
+      - name: chat_frontend_e2e
+        interval: 30s
+        rules:
+          - record: chat_frontend:e2e_p95:rate_5m
+            expr: |
+              histogram_quantile(0.95,
+                sum by (agent_name, le) (rate(chat_frontend_e2e_seconds_bucket[5m]))
+              )
+
+          - record: chat_frontend:e2e_slo_ratio:rate_5m
+            expr: |
+              sum by (agent_name) (rate(chat_frontend_e2e_seconds_bucket{le="120"}[5m]))
+              /
+              sum by (agent_name) (rate(chat_frontend_e2e_seconds_count[5m]))
+
+          - alert: SLO_ChatFrontendE2EFast
+            expr: |
+              chat_frontend:e2e_slo_ratio:rate_5m < 0.90
+            for: 5m
+            labels:
+              severity: warn
+              slo: chat_frontend_e2e
+            annotations:
+              summary: "chat-frontend e2e latency p95 > 120s (SLO target: 90% ≤ 120s)"
+              runbook: "docs/runbooks/slo-burn-alert.md"
+
+      # ─── Apdex recording rules (ADR-Obs-12, T=10s, tolerable=40s→le=30) ───
+      - name: chat_frontend_apdex
+        interval: 30s
+        rules:
+          - record: chat_frontend:apdex_satisfied:rate5m
+            expr: |
+              sum by (agent_name) (rate(chat_frontend_ttft_seconds_bucket{le="10"}[5m]))
+
+          - record: chat_frontend:apdex_tolerable:rate5m
+            expr: |
+              sum by (agent_name) (rate(chat_frontend_ttft_seconds_bucket{le="30"}[5m]))
+              -
+              sum by (agent_name) (rate(chat_frontend_ttft_seconds_bucket{le="10"}[5m]))
+
+          - record: chat_frontend:apdex_total:rate5m
+            expr: |
+              sum by (agent_name) (rate(chat_frontend_ttft_seconds_count[5m]))
+
+          - record: chat_frontend:apdex_score:rate5m
+            expr: |
+              (
+                chat_frontend:apdex_satisfied:rate5m
+                + (chat_frontend:apdex_tolerable:rate5m / 2)
+              )
+              /
+              chat_frontend:apdex_total:rate5m
+
+      # ─── T2.1 — sandbox execution success SLI ───────────────────────────────
+      - name: sandbox_success
+        interval: 30s
+        rules:
+          - record: sandbox_executions:success_ratio_rate_5m
+            expr: |
+              sum by (agent_name, namespace) (rate(sandbox_executions_total{outcome="success"}[5m]))
+              /
+              sum by (agent_name, namespace) (rate(sandbox_executions_total[5m]))
+
+          - record: sandbox_executions:success_ratio_rate_1h
+            expr: |
+              sum by (agent_name, namespace) (rate(sandbox_executions_total{outcome="success"}[1h]))
+              /
+              sum by (agent_name, namespace) (rate(sandbox_executions_total[1h]))
+
+          - alert: SLO_SandboxSuccessFast
+            expr: |
+              (
+                sandbox_executions:success_ratio_rate_5m < (1 - 14.4 * (1 - 0.99))
+              )
+              and
+              (
+                sandbox_executions:success_ratio_rate_1h < (1 - 14.4 * (1 - 0.99))
+              )
+            for: 2m
+            labels:
+              severity: page
+              slo: sandbox_success
+              window: 5m_1h
+            annotations:
+              summary: "sandbox success rate burn 14.4x SLO budget"
+              runbook: "docs/runbooks/slo-burn-alert.md"

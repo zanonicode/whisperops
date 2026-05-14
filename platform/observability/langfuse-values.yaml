@@ -1,0 +1,163 @@
+# Self-hosted Langfuse chart values for whisperops.
+# Chart: langfuse-k8s/langfuse v1.5.10 (ADR-Obs-3, Rule #10).
+# Backing stores:
+#   - Postgres: Cloud SQL via Auth Proxy sidecar (ADR-Obs-3)
+#   - Redis:    bundled bitnami Redis (cache + queue, in-cluster)
+#   - ClickHouse: bundled (high-volume trace event store, Langfuse v3+ requirement)
+#   - S3 (MinIO): bundled (blob storage for large traces + attachments)
+# Sub-chart passwords are stable POC strings — DO NOT rotate without a
+# Langfuse data-rebuild (in-cluster Redis/ClickHouse/MinIO PVCs persist
+# encrypted data referencing these passwords).
+
+###############################################################################
+# Top-level sub-chart values (postgresql, redis, clickhouse, s3 live at the
+# ROOT of values.yaml per chart structure, NOT nested under langfuse:).
+###############################################################################
+
+# Postgres: DISABLED (Cloud SQL via Auth Proxy used instead, ADR-Obs-3).
+# The dummy password satisfies the chart's required() check in _helpers.tpl:205;
+# the actual connection flows via langfuse.database.url below.
+postgresql:
+  deploy: false
+  auth:
+    password: "unused-cloud-sql-auth-proxy-is-the-real-connection"
+
+# Redis: bundled bitnami Redis (in-cluster, cache + queue).
+redis:
+  auth:
+    password: "whisperops-poc-redis-pwd"
+
+# ClickHouse: bundled (in-cluster, high-volume trace event store — Langfuse v3+).
+# Single-node POC VM has limited CPU; chart defaults are HA (replicaCount: 3 +
+# Zookeeper cluster, ~6 stateful pods) which doesn't fit. Disable clustering
+# (drops Zookeeper entirely), use a single replica, and downsize resources.
+clickhouse:
+  auth:
+    username: "default"
+    password: "whisperops-poc-clickhouse-pwd"
+  clusterEnabled: false
+  replicaCount: 1
+  shards: 1
+  resourcesPreset: "none"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: 1
+      memory: 2Gi
+  zookeeper:
+    enabled: false
+    replicaCount: 1
+
+# S3: bundled MinIO (in-cluster, blob storage for large traces + attachments).
+s3:
+  auth:
+    rootUser: "minio"
+    rootPassword: "whisperops-poc-minio-rootpwd"
+
+langfuse:
+  # DATABASE_URL is injected via additionalEnv (chart's commonEnv emits
+  # DATABASE_HOST/USERNAME/PASSWORD/NAME components only — the langfuse v3
+  # application itself reads DATABASE_URL). Connection flows via Cloud SQL
+  # Auth Proxy sidecar on 127.0.0.1:5432.
+  additionalEnv:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-postgres-credentials
+          key: database_url
+
+  nextauth:
+    url: http://langfuse.observability.svc.cluster.local:3000
+    secret:
+      secretKeyRef:
+        name: langfuse-postgres-credentials
+        key: nextauth_secret
+
+  # ENCRYPTION_KEY is at langfuse.encryptionKey (camelCase per chart schema,
+  # NOT langfuse.encryption.key — the chart helper uses .Values.langfuse.encryptionKey).
+  encryptionKey:
+    secretKeyRef:
+      name: langfuse-postgres-credentials
+      key: encryption_key
+
+  salt:
+    secretKeyRef:
+      name: langfuse-postgres-credentials
+      key: salt
+
+  # Cloud SQL Auth Proxy sidecar is needed by BOTH web AND worker pods
+  # (both connect to Postgres via 127.0.0.1:5432). Define ONCE here at the
+  # top of `langfuse:` so it applies to all langfuse pods — saves duplicating
+  # the container spec under web.pod and worker.pod.
+  extraContainers:
+    - name: cloud-sql-proxy
+      image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.0
+      args:
+        - "--port=5432"
+        - "$(CLOUD_SQL_INSTANCE)"
+        - "--credentials-file=/var/run/gcp/credentials.json"
+      env:
+        - name: CLOUD_SQL_INSTANCE
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-postgres-credentials
+              key: cloud_sql_instance
+      volumeMounts:
+        - name: langfuse-gcp-creds
+          mountPath: /var/run/gcp
+          readOnly: true
+      resources:
+        requests:
+          cpu: 20m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+
+  extraVolumes:
+    - name: langfuse-gcp-creds
+      secret:
+        secretName: langfuse-postgres-credentials
+        items:
+          - key: proxy_credentials_json
+            path: credentials.json
+
+  web:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 1
+        memory: 1Gi
+    # Generous probe timing — Langfuse v3 connects to Postgres + ClickHouse +
+    # Redis + S3 on startup; chart default initialDelaySeconds=20 is too short.
+    livenessProbe:
+      httpGet:
+        path: /api/public/health
+        port: http
+      initialDelaySeconds: 120
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 10
+    readinessProbe:
+      httpGet:
+        path: /api/public/ready
+        port: http
+      initialDelaySeconds: 60
+      periodSeconds: 20
+      timeoutSeconds: 10
+      failureThreshold: 10
+
+  worker:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        cpu: 1
+        memory: 1Gi

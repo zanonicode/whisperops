@@ -11,19 +11,83 @@
 tempo:
   enabled: false
 
-# Enable the grafana sidecar to auto-load ConfigMaps labeled
-# grafana_dashboard=1 (whisperops-dashboards ConfigMap from
-# observability-extras chart).
+mimir:
+  structuredConfig:
+    alertmanager_storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/alertmanager
+    ruler_storage:
+      backend: filesystem
+      filesystem:
+        dir: /data/ruler
+    ruler:
+      rule_path: /data/ruler
+      # ConfigMaps labeled mimir-ruler-rules=1 are mounted here by the ArgoCD
+      # observability app (sync-wave 5). Mimir reloads on file change.
+      rule_files:
+        - /etc/mimir-rules/*.yaml
+
+  alertmanager:
+    enabled: true
+    fallbackConfig: |
+      global:
+        resolve_timeout: 5m
+      route:
+        receiver: "null"
+      receivers:
+        - name: "null"
+
 grafana:
-  # Install the Infinity datasource plugin so Grafana can query the Langfuse
-  # public REST API (/api/public/traces, /api/public/scores, etc.). Traces
-  # dual-ship to Langfuse via OTel; Langfuse-specific panels (cost rollups,
-  # scores) read via Infinity.
   plugins:
     - yesoreyeram-infinity-datasource
-  # Pull Langfuse credentials into Grafana's env so the datasource
-  # provisioning ConfigMap can ${LANGFUSE_PUBLIC_KEY} / ${LANGFUSE_SECRET_KEY}.
-  envFromSecret: langfuse-credentials
+  # GCM credentials for Stackdriver datasource (ADR-Obs-2); sidecar reads ConfigMap
+  # labeled grafana_datasource=1 and substitutes ${GRAFANA_GCM_SA_EMAIL} etc.
+  envFromSecret: grafana-gcm-credentials
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Mimir
+          type: prometheus
+          access: proxy
+          uid: mimir
+          url: http://lgtm-distributed-mimir-nginx.observability.svc:80/prometheus
+          isDefault: true
+          jsonData:
+            timeInterval: 30s
+
+        - name: Loki
+          type: loki
+          access: proxy
+          uid: loki
+          url: http://lgtm-distributed-loki-gateway.observability.svc:80
+
+        - name: Tempo
+          type: tempo
+          access: proxy
+          uid: tempo
+          url: http://tempo-mono.observability.svc:3100
+          jsonData:
+            tracesToLogsV2:
+              datasourceUid: loki
+              spanStartTimeShift: "-2m"
+              spanEndTimeShift: "2m"
+              filterByTraceID: true
+              filterBySpanID: false
+              tags:
+                - { key: "agent_name" }
+                - { key: "namespace" }
+                - { key: "service" }
+              customQuery: false
+            serviceMap:
+              datasourceUid: mimir
+            nodeGraph:
+              enabled: true
+            spanBar:
+              type: "Tag"
+              tag: "agent_name"
+
   sidecar:
     dashboards:
       enabled: true

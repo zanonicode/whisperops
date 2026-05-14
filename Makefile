@@ -3,6 +3,7 @@
         tf-init tf-plan tf-apply \
         platform-bootstrap regenerate-profiles \
         langfuse-secret kagent-vertex-key \
+        tempo-gcs-key grafana-gcm-key langfuse-pg-key \
         external-ingresses \
         drain-crossplane \
         upload-datasets decrypt-secrets \
@@ -80,7 +81,7 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 
-deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key kagent-vertex-key build-images deploy-vm endpoints ## Full deploy: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → kagent-vertex-key → build-images → deploy-vm → endpoints
+deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key kagent-vertex-key tempo-gcs-key grafana-gcm-key langfuse-pg-key build-images deploy-vm endpoints ## Full deploy: preflight → tf-apply → copy-repo → gcp-bootstrap-key → kagent-vertex-key → obs-keys → build-images → deploy-vm → endpoints
 	@# Rollup target — invokes the full chain. Each sub-target is independently
 	@# runnable for debugging (e.g. `make build-images` alone after a code change).
 	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
@@ -205,6 +206,93 @@ kagent-vertex-key: ## Generate fresh whisperops-kagent-vertex SA key + apply as 
 		rm -f /tmp/kagent-vertex-key.json'
 	@echo "  ✓ kagent-vertex-credentials Secret applied in kagent-system (Reflector → agent-*)"
 
+# ── Observability SA keys ──────────────────────────────────────────────────────
+# Three ephemeral SA keys for the observability tier. All follow the
+# kagent-vertex-key pattern (CLAUDE.md gotcha #10): generated fresh per deploy,
+# never SOPS-encrypted, applied via kubectl on the VM.
+
+tempo-gcs-key: ## Generate fresh whisperops-tempo-writer SA key + apply as Secret tempo-gcs-credentials in observability
+	@# Tempo uses this key to write WAL + trace blocks to gs://whisperops-tempo-blocks/.
+	@# Secret keys: credentials.json (SA key) + bucket_name (from terraform output, consumed
+	@# by tempo-values.yaml extraEnvs as $${TEMPO_BLOCKS_BUCKET}).
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Materializing whisperops-tempo-writer SA key as tempo-gcs-credentials Secret"
+	@BUCKET=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw tempo_blocks_bucket 2>/dev/null) || \
+		(echo "ERROR: tempo_blocks_bucket output not found — run make tf-apply first" && exit 1); \
+	 TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
+	 gcloud iam service-accounts keys create $$TMPF \
+		--iam-account=whisperops-tempo-writer@$(PROJECT_ID).iam.gserviceaccount.com \
+		--project=$(PROJECT_ID) 2>&1 | tail -1; \
+	 gcloud compute scp $$TMPF whisperops-vm:/tmp/tempo-gcs-key.json --zone=$(ZONE) >/dev/null; \
+	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=" \
+		set -e; \
+		sudo /usr/local/bin/kubectl create secret generic tempo-gcs-credentials -n observability \
+			--from-file=credentials.json=/tmp/tempo-gcs-key.json \
+			--from-literal=bucket_name='$$BUCKET' \
+			--dry-run=client -o yaml \
+			| sudo /usr/local/bin/kubectl apply -f -; \
+		rm -f /tmp/tempo-gcs-key.json"
+	@echo "  ✓ tempo-gcs-credentials Secret applied in observability namespace"
+
+grafana-gcm-key: ## Generate fresh whisperops-grafana-gcm SA key + apply as Secret grafana-gcm-credentials in observability
+	@# Grafana reads GRAFANA_GCM_SA_EMAIL + GRAFANA_GCM_PRIVATE_KEY from this Secret
+	@# for the GCP Cloud Monitoring (Stackdriver) datasource.
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Materializing whisperops-grafana-gcm SA key as grafana-gcm-credentials Secret"
+	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
+	 gcloud iam service-accounts keys create $$TMPF \
+		--iam-account=whisperops-grafana-gcm@$(PROJECT_ID).iam.gserviceaccount.com \
+		--project=$(PROJECT_ID) 2>&1 | tail -1; \
+	 SA_EMAIL="whisperops-grafana-gcm@$(PROJECT_ID).iam.gserviceaccount.com"; \
+	 PRIVATE_KEY=$$(python3 -c "import json,sys; d=json.load(open('$$TMPF')); print(d['private_key'])"); \
+	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=" \
+		set -e; \
+		sudo /usr/local/bin/kubectl create secret generic grafana-gcm-credentials -n observability \
+			--from-literal=GRAFANA_GCM_SA_EMAIL=$$SA_EMAIL \
+			--from-literal=GRAFANA_GCM_PRIVATE_KEY='$$PRIVATE_KEY' \
+			--dry-run=client -o yaml \
+			| sudo /usr/local/bin/kubectl apply -f -"
+	@echo "  ✓ grafana-gcm-credentials Secret applied in observability namespace"
+
+langfuse-pg-key: ## Read Terraform outputs for Langfuse + generate proxy SA key, apply as Secret langfuse-postgres-credentials in observability
+	@# Assembles the langfuse-postgres-credentials Secret with 6 keys consumed
+	@# by platform/observability/langfuse-values.yaml: database_url,
+	@# cloud_sql_instance, nextauth_secret, encryption_key, salt,
+	@# proxy_credentials_json. First 5 come from terraform outputs (TF-state
+	@# persisted so destroy+deploy doesn't invalidate existing Langfuse data);
+	@# proxy_credentials_json is a fresh SA key generated per deploy (gotcha #10).
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Reading Terraform outputs for Langfuse + generating proxy SA key"
+	@CONN_NAME=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw langfuse_pg_connection_name 2>/dev/null) || \
+		(echo "ERROR: langfuse_pg_connection_name output not found — run make tf-apply first" && exit 1); \
+	 DB_URL=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw langfuse_pg_database_url 2>/dev/null) || \
+		(echo "ERROR: langfuse_pg_database_url output not found" && exit 1); \
+	 NEXTAUTH=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw langfuse_nextauth_secret 2>/dev/null) || \
+		(echo "ERROR: langfuse_nextauth_secret output not found" && exit 1); \
+	 ENC_KEY=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw langfuse_encryption_key 2>/dev/null) || \
+		(echo "ERROR: langfuse_encryption_key output not found" && exit 1); \
+	 SALT=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw langfuse_salt 2>/dev/null) || \
+		(echo "ERROR: langfuse_salt output not found" && exit 1); \
+	 PROXY_SA=$$(terraform -chdir=$(TERRAFORM_DIR) output -raw langfuse_cloudsql_proxy_sa_email 2>/dev/null) || \
+		(echo "ERROR: langfuse_cloudsql_proxy_sa_email output not found" && exit 1); \
+	 TMPF=$$(mktemp); \
+	 gcloud iam service-accounts keys create $$TMPF --iam-account=$$PROXY_SA >/dev/null 2>&1 || \
+		(echo "ERROR: failed to create SA key for $$PROXY_SA" && rm -f $$TMPF && exit 1); \
+	 PROXY_JSON=$$(cat $$TMPF); \
+	 rm -f $$TMPF; \
+	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=" \
+		set -e; \
+		sudo /usr/local/bin/kubectl create secret generic langfuse-postgres-credentials -n observability \
+			--from-literal=database_url='$$DB_URL' \
+			--from-literal=cloud_sql_instance='$$CONN_NAME' \
+			--from-literal=nextauth_secret='$$NEXTAUTH' \
+			--from-literal=encryption_key='$$ENC_KEY' \
+			--from-literal=salt='$$SALT' \
+			--from-literal=proxy_credentials_json='$$PROXY_JSON' \
+			--dry-run=client -o yaml \
+			| sudo /usr/local/bin/kubectl apply -f -"
+	@echo "  ✓ langfuse-postgres-credentials Secret applied in observability namespace (6 keys)"
+
 build-images: ## Build whisperops container images on the VM and push to Artifact Registry
 	@echo "→ Building whisperops images on whisperops-vm"
 	@gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
@@ -300,6 +388,7 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	$(MAKE) _push-whisperops-to-gitea; \
 	echo "→ Materializing langfuse-credentials Secret"; \
 	$(MAKE) langfuse-secret; \
+	echo "→ Observability SA secrets already applied by deploy chain (tempo-gcs-key / grafana-gcm-key / langfuse-pg-key)"; \
 	echo "→ Regenerating external Ingresses"; \
 	$(MAKE) external-ingresses VM_IP="$$DERIVED_IP"; \
 	echo "→ Materializing whisperops-system Namespace + platform-config skeleton"; \
@@ -502,6 +591,52 @@ _clean-orphan-sas: ## Delete agent-* GCP service accounts orphaned by failed Cro
 			gcloud iam service-accounts delete "$$sa" --project=$(PROJECT_ID) --quiet 2>/dev/null || true; \
 		done
 	@echo "  ✓ Orphan agent-* SA pass complete"
+
+destroy-agent: ## Tear down ONE scaffolded agent (cluster + GCS bucket + SA + IAM bindings). Required: AGENT=<name>
+	@[ -n "$(AGENT)" ] || (echo "ERROR: AGENT=<name> required (e.g. 'make destroy-agent AGENT=housing-demo')" && exit 1)
+	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
+	@echo "→ Destroying agent '$(AGENT)' — namespace agent-$(AGENT) + GCS bucket + SA + IAM bindings"
+	@# Per-agent teardown counterpart to `make destroy` (whole cluster). Single-subshell
+	@# SSH wrapper per Rule #8 + drain ordering identical to `drain-crossplane`:
+	@#   1. Sever ArgoCD reconcile (clear app finalizer + delete)
+	@#   2. Delete kagent CRs (no cloud-side dependencies)
+	@#   3. Drain Crossplane MRs in dependency order: ProjectIamMember → Bucket → ServiceAccount
+	@#   4. Delete the namespace (should be empty after MR drain)
+	@#   5. GCP-side fallback cleanup + ghost IAM binding sweep
+	@# Idempotent (uses --ignore-not-found everywhere); safe to re-run.
+	@if ! gcloud compute instances describe whisperops-vm --zone=$(ZONE) >/dev/null 2>&1; then \
+		echo "  ↳ VM does not exist — skipping cluster cleanup; will still attempt GCP-side cleanup"; \
+	else \
+		gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command='\
+			set +e; \
+			NS=agent-$(AGENT); \
+			echo "  → Stop ArgoCD reconcile for $$NS"; \
+			sudo kubectl patch app -n argocd $$NS --type=json -p="[{\"op\":\"remove\",\"path\":\"/metadata/finalizers\"}]" 2>/dev/null || true; \
+			sudo kubectl delete app -n argocd $$NS --ignore-not-found --wait=false 2>/dev/null; \
+			echo "  → Delete kagent CRs in $$NS"; \
+			sudo kubectl delete agent.kagent.dev --all -n $$NS --ignore-not-found --wait=false 2>/dev/null; \
+			sudo kubectl delete remoteMCPServer.kagent.dev --all -n $$NS --ignore-not-found --wait=false 2>/dev/null; \
+			sudo kubectl delete modelconfig.kagent.dev --all -n $$NS --ignore-not-found --wait=false 2>/dev/null; \
+			echo "  → Drain Crossplane MRs in $$NS (IAM → bucket → SA, with finalizer waits)"; \
+			sudo kubectl delete projectiammember.cloudplatform.gcp.upbound.io --all -n $$NS --ignore-not-found --wait=true --timeout=120s 2>/dev/null; \
+			sudo kubectl delete bucket.storage.gcp.upbound.io --all -n $$NS --ignore-not-found --wait=true --timeout=180s 2>/dev/null; \
+			sudo kubectl delete serviceaccount.cloudplatform.gcp.upbound.io --all -n $$NS --ignore-not-found --wait=true --timeout=120s 2>/dev/null; \
+			echo "  → Delete namespace $$NS"; \
+			sudo kubectl delete ns $$NS --ignore-not-found --wait=true --timeout=120s 2>/dev/null; \
+			echo "  ✓ Cluster-side cleanup complete for $$NS" \
+		'; \
+	fi
+	@# Fallback GCP-side cleanup — no-ops if Crossplane already handled them.
+	@# Matches the _clean-orphan-buckets / _clean-orphan-sas pattern but scoped to ONE agent.
+	@echo "→ GCP-side fallback cleanup for agent '$(AGENT)'"
+	@gcloud storage rm -r "gs://agent-$(AGENT)" --project=$(PROJECT_ID) 2>/dev/null \
+		&& echo "  ↳ Removed orphan bucket gs://agent-$(AGENT)" \
+		|| echo "  ↳ Bucket gs://agent-$(AGENT) already gone"
+	@gcloud iam service-accounts delete "agent-$(AGENT)@$(PROJECT_ID).iam.gserviceaccount.com" --project=$(PROJECT_ID) --quiet 2>/dev/null \
+		&& echo "  ↳ Removed orphan SA agent-$(AGENT)@$(PROJECT_ID).iam.gserviceaccount.com" \
+		|| echo "  ↳ SA agent-$(AGENT)@$(PROJECT_ID).iam.gserviceaccount.com already gone"
+	@$(MAKE) _clean-orphan-iam-bindings PROJECT_ID=$(PROJECT_ID) 2>&1 | grep -v "^make\[" | tail -3
+	@echo "✓ Agent '$(AGENT)' destroyed. Safe to re-scaffold (same name or different) via Backstage UI."
 
 # ── Platform bootstrap ─────────────────────────────────────────────────────────
 

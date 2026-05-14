@@ -1,0 +1,27 @@
+# Grafana Stackdriver (Cloud Monitoring) datasource ConfigMap.
+# Discovered automatically by the Grafana sidecar (label grafana_datasource=1).
+# SA: whisperops-grafana-gcm (roles/monitoring.viewer) provisioned in Terraform (ADR-Obs-2).
+# Credentials injected into Grafana via envFromSecret: grafana-gcm-credentials (set in lgtm-values.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-stackdriver-datasource
+  namespace: observability
+  labels:
+    grafana_datasource: "1"
+data:
+  stackdriver.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: GCP-CloudMonitoring
+        type: stackdriver
+        access: proxy
+        uid: stackdriver
+        jsonData:
+          tokenUri: https://oauth2.googleapis.com/token
+          clientEmail: ${GRAFANA_GCM_SA_EMAIL}
+          defaultProject: whisperops
+          authenticationType: jwt
+        secureJsonData:
+          privateKey: ${GRAFANA_GCM_PRIVATE_KEY}
+        editable: false

@@ -1,0 +1,64 @@
+{
+  "title": "D5 — Service Map",
+  "uid": "whisperops-service-map",
+  "tags": ["service-map", "tempo", "spanmetrics", "a2a"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "60s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Service Dependency Graph (from Tempo span metrics)",
+      "type": "nodeGraph",
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "serviceMap"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "A2A Call Rate by Service (calls/min)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum by (service_name, span_name) (rate(traces_spanmetrics_calls_total{span_kind=\"SPAN_KIND_CLIENT\"}[5m])) * 60",
+          "legendFormat": "{{ service_name }} → {{ span_name }}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "A2A p95 Latency by Service (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.95, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{span_kind=\"SPAN_KIND_CLIENT\"}[5m])))",
+          "legendFormat": "p95: {{ service_name }}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Error Rate by Service (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "100 * sum by (service_name) (rate(traces_spanmetrics_calls_total{status_code=\"STATUS_CODE_ERROR\"}[5m])) / sum by (service_name) (rate(traces_spanmetrics_calls_total[5m]))",
+          "legendFormat": "error %: {{ service_name }}"
+        }
+      ]
+    }
+  ]
+}

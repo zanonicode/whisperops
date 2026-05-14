@@ -14,6 +14,16 @@ spec:
     forceDestroy: true
     versioning:
       - enabled: true
+    # CORS: allow browser fetches of signed-URL artifacts (Plotly JSON charts) from the
+    # chat-frontend served at https://agent-<name>.<ip>.sslip.io. Signed URLs are
+    # the auth mechanism here; `*` origin is acceptable because access still requires
+    # the signature. Without this, browsers block the fetch (chart fails to render
+    # inline even though the JSON exists in the bucket).
+    cors:
+      - origin: ["*"]
+        method: ["GET", "HEAD"]
+        responseHeader: ["Content-Type"]
+        maxAgeSeconds: 3600
     labels:
       whisperops-agent: agent-${{ values.agent_name }}
       dataset: ${{ values.dataset_id }}

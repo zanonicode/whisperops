@@ -123,9 +123,9 @@ Each section below tells you **what credentials you need**, **where to get them*
 OPENAI_API_KEY: sk-proj-...
 ```
 
-### 4.3 `langfuse.enc.yaml` — Langfuse Cloud
+### 4.2 `langfuse.enc.yaml` — Langfuse self-hosted OTLP endpoint credentials
 
-**What it does:** dual-export of OTel traces from `opentelemetry-collector` to Langfuse Cloud, AND Grafana Infinity datasource auth for live querying (`https://us.cloud.langfuse.com/api/public/observations`). Also drives `budget-controller` cost polling.
+**What it does:** dual-export of OTel traces from `opentelemetry-collector` to self-hosted Langfuse (`otlphttp/langfuse` exporter). The `LANGFUSE_HOST` points at the in-cluster Langfuse service. budget-controller no longer reads this Secret (it polls Mimir instead).
 
 **How to obtain:**
 1. Sign up at https://us.cloud.langfuse.com (free tier = 50k events/month, sufficient for prototype)
@@ -141,7 +141,29 @@ LANGFUSE_HOST: https://us.cloud.langfuse.com
 
 > If you sign up on the EU region instead, change `LANGFUSE_HOST` to `https://cloud.langfuse.com`. The `make langfuse-secret` target derives `LANGFUSE_OTLP_ENDPOINT` and `LANGFUSE_BASIC_AUTH` from these three values.
 
-### 4.2 Bootstrap SA key — ephemeral, not SOPS-encrypted
+### 4.3 Ephemeral GCP SA keys — observability tier
+
+Three new SA keys are generated per deploy and applied as Kubernetes Secrets via Makefile targets (mirroring the `kagent-vertex-key` pattern). None are SOPS-encrypted.
+
+**`tempo-gcs-credentials`** — Secret in `observability` namespace. Holds a JSON key for `whisperops-tempo-writer@<project>.iam.gserviceaccount.com` (`roles/storage.objectAdmin` on `gs://whisperops-tempo-blocks/`). Tempo reads this at startup to write WAL + trace blocks to GCS.
+
+```bash
+make tempo-gcs-key   # generates key, scp's to VM, applies Secret
+```
+
+**`grafana-gcm-credentials`** — Secret in `observability` namespace. Holds the JSON key for `whisperops-grafana-gcm@<project>.iam.gserviceaccount.com` (`roles/monitoring.viewer`). Grafana reads `${GRAFANA_GCM_SA_EMAIL}` and `${GRAFANA_GCM_PRIVATE_KEY}` from this Secret for the GCP Cloud Monitoring datasource.
+
+```bash
+make grafana-gcm-key   # generates key, scp's to VM, applies Secret
+```
+
+**`langfuse-postgres-credentials`** — Secret in `observability` namespace. Contains `DATABASE_URL` (Cloud SQL connection string for `whisperops-langfuse-pg`) and `CLOUD_SQL_INSTANCE` (connection name for the Auth Proxy sidecar). Terraform outputs `langfuse_pg_connection_name` and `langfuse_pg_database_url` (sensitive); the Makefile target reads these outputs and creates the Secret.
+
+```bash
+make langfuse-pg-key   # reads tf outputs, applies Secret in observability
+```
+
+### 4.4 Bootstrap SA key — ephemeral, not SOPS-encrypted
 
 The bootstrap GCP Service Account (`whisperops-bootstrap@<project>.iam.gserviceaccount.com`) has unconditional `storage.admin`, `iam.serviceAccountAdmin`, `iam.serviceAccountKeyAdmin`, `resourcemanager.projectIamAdmin`, and `artifactregistry.writer`. Conditional bindings don't gate `*.create` operations (the resource doesn't have a name yet at create time), so they were removed in favor of unconditional bindings + naming-convention enforcement at the Backstage scaffolder layer.
 
@@ -156,7 +178,7 @@ make gcp-bootstrap-key
 
 You do not need a `crossplane-gcp-creds.enc.yaml` file. The previous SOPS-encrypted approach was deprecated.
 
-### 4.3 Vertex SA key — ephemeral, not SOPS-encrypted
+### 4.5 Vertex SA key — ephemeral, not SOPS-encrypted
 
 The kagent Vertex SA (`whisperops-kagent-vertex@<project>.iam.gserviceaccount.com`) is granted `roles/aiplatform.user` for Gemini 2.5 Flash inference. Like the bootstrap SA key, this is generated fresh per deploy and never stored in git.
 
@@ -170,7 +192,7 @@ make kagent-vertex-key
 
 Never create `secrets/vertex.enc.yaml`. The ephemeral pattern (matching gcp-bootstrap-key) is the correct approach.
 
-### 4.4 `supabase.enc.yaml` — dataset profile store (currently dormant)
+### 4.6 `supabase.enc.yaml` — dataset profile store (currently dormant)
 
 **What it does (designed intent):** the platform-bootstrap Job uploads dataset profiles (column types, row counts, sample values) to a Supabase Postgres table. Read by Backstage at agent-creation time to populate the dataset dropdown metadata.
 
@@ -260,6 +282,9 @@ After the `*.enc.yaml` files are encrypted with your keys, the platform layer ap
 | `kagent-vertex-credentials` | `kagent-system` + replicated via Reflector to `agent-*` | `make kagent-vertex-key` (invoked by `make deploy`) generates fresh Vertex SA JSON key, applies + annotates for Reflector |
 | `kagent-openai` | `kagent-system` | `kubectl create secret` from SOPS-decrypt |
 | `langfuse-credentials` | `observability` (source) + replicated to `whisperops-system` + `agent-*` via Reflector | `make langfuse-secret` decrypts, derives 5 keys, applies + annotates for Reflector |
+| `tempo-gcs-credentials` | `observability` | `make tempo-gcs-key` (ephemeral, fresh per deploy) — Tempo GCS WAL write access |
+| `grafana-gcm-credentials` | `observability` | `make grafana-gcm-key` (ephemeral, fresh per deploy) — Grafana GCP Cloud Monitoring datasource |
+| `langfuse-postgres-credentials` | `observability` | `make langfuse-pg-key` — reads `terraform output langfuse_pg_*`, applies DATABASE_URL + CLOUD_SQL_INSTANCE |
 | `gcp-bootstrap-sa-key` | `crossplane-system` | `make gcp-bootstrap-key` (ephemeral, fresh per deploy) |
 | `ar-pull-secret-source` | `crossplane-system` (source) + replicated to `agent-*` via Reflector | Crossplane seed Job populates from `gcloud auth print-access-token`; 30-min rotation CronJob refreshes |
 | `supabase-credentials` | `whisperops-system` | Currently dormant — Job that would consume this is not invoked |

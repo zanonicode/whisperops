@@ -1,0 +1,92 @@
+# Grafana Alloy DaemonSet — k8s stdout log forwarding to Loki.
+# Chart: grafana/alloy v1.7.0 (ADR-Obs-10 — Alloy replaces deprecated Promtail).
+# River config: discover pods → tail /var/log/containers → parse JSON (trace_id/level/service) → Loki.
+# Label normalization per ADR-Obs-9 Path 2.
+controller:
+  type: daemonset
+
+alloy:
+  configMap:
+    content: |
+      // Discover all pods in the cluster
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // Map k8s metadata to Loki labels
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_whisperops_io_agent"]
+          target_label  = "agent_name"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "service"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+      }
+
+      // Tail container logs from the host filesystem
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.parse_json.receiver]
+      }
+
+      // Parse each log line: attempt JSON extraction of trace_id/level/service;
+      // fall through to plain-text labelling if the line is not JSON.
+      loki.process "parse_json" {
+        // Attempt JSON parse — no-op (stage skipped) if the line is not valid JSON
+        stage.json {
+          expressions = {
+            trace_id     = "trace_id",
+            level        = "level",
+            json_service = "service",
+          }
+        }
+
+        // Promote extracted JSON fields to Loki stream labels (empty string = field absent → label omitted)
+        stage.labels {
+          values = {
+            trace_id = "",
+            level    = "",
+          }
+        }
+
+        // Drop noisy debug log lines from platform components to reduce Loki ingestion volume
+        stage.drop {
+          expression  = ".*level=debug.*"
+          drop_counter_reason = "debug_filter"
+        }
+
+        forward_to = [loki.write.lgtm.receiver]
+      }
+
+      loki.write "lgtm" {
+        endpoint {
+          url = "http://lgtm-distributed-loki-gateway.observability.svc:80/loki/api/v1/push"
+        }
+      }
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+tolerations:
+  - operator: Exists

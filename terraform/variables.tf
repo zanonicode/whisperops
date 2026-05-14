@@ -26,3 +26,15 @@ variable "allowed_ssh_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
+
+variable "tempo_blocks_bucket_name" {
+  description = "Name of the GCS bucket for Tempo WAL blocks and trace storage."
+  type        = string
+  default     = "whisperops-tempo-blocks"
+}
+
+variable "langfuse_db_tier" {
+  description = "Cloud SQL machine tier for the Langfuse Postgres instance."
+  type        = string
+  default     = "db-f1-micro"
+}
