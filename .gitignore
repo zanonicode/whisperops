@@ -1,5 +1,4 @@
-# Secrets & keys
-secrets/*.dec.yaml
+# Age / SOPS private keys — defensive even though SOPS is not currently wired
 age.key
 *.age
 

@@ -56,40 +56,12 @@ def validate_manifests() -> bool:
     return all_valid
 
 
-def check_profile_schema_coverage() -> bool:
-    profiles_dir = Path(__file__).parent.parent.parent.parent / "src" / "platform-bootstrap" / "profiles"
-    if not profiles_dir.exists():
-        print("WARN  platform-bootstrap/profiles/ not found; skipping schema coverage check")
-        return True
-
-    for dataset_id in VALID_DATASET_IDS:
-        profile_file = profiles_dir / f"{dataset_id}.json"
-        if not profile_file.exists():
-            print(f"FAIL  Missing profile placeholder: {profile_file}")
-            return False
-
-        with profile_file.open() as f:
-            profile = json.load(f)
-
-        if "dataset_id" not in profile or "csv_filename" not in profile:
-            print(f"FAIL  {profile_file.name} missing required keys")
-            return False
-
-        print(f"PASS  Profile placeholder: {profile_file.name}")
-
-    return True
-
-
 def main() -> None:
     print("=== Eval: Fixture Validation ===")
     fixtures_ok = validate_manifests()
 
     print("")
-    print("=== Eval: Profile Schema Coverage ===")
-    profiles_ok = check_profile_schema_coverage()
-
-    print("")
-    if fixtures_ok and profiles_ok:
+    if fixtures_ok:
         print("=== All evals PASSED ===")
         sys.exit(0)
     else:

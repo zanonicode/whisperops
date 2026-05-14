@@ -1,330 +1,126 @@
-# Secrets & SOPS — Operator Guide
+# Credentials Inventory
 
-This guide covers how to **bring your own credentials** to a fresh whisperops deploy. The repo ships with a SOPS-encrypted set under `secrets/` that only decrypts with the maintainer's `age.key`. To run the platform on your own GCP project + SaaS accounts, follow this guide end-to-end.
+> Every credential whisperops uses at runtime: what it is, where it comes from, where it lands in the cluster, and how it rotates.
 
-> Cross-references: [`DESIGN_whisperops.md`](../.claude/sdd/features/DESIGN_whisperops.md), [`Makefile`](../Makefile), [`OPERATIONS.md`](OPERATIONS.md).
+There is **no SOPS** in the current setup. There is **no `secrets/` directory**. Every credential is one of:
+
+| Class | Source | Lifetime |
+|---|---|---|
+| **Terraform-issued SA keys** | `gcloud iam service-accounts keys create` invoked by a Makefile target reading a Terraform-managed SA | One per `make deploy` (ephemeral) |
+| **Terraform-issued random passwords** | `random_password` / `random_id` resources in `terraform/observability.tf` | Stable across deploys; rotates only on explicit `terraform taint` |
+| **Application keys issued in-cluster** | Operator signs up + creates an API key inside a self-hosted application (Langfuse) | Persists as long as the application's Postgres data persists |
+| **Token-rotation Secrets** | A CronJob in `crossplane-system` refreshes the Secret on a fixed cadence | Refreshes every 30 min |
+
+The whole credential surface fits on one page. Read this top-to-bottom to know exactly what's in the cluster.
 
 ---
 
-## TL;DR — Operator checklist
+## 1. GCP service-account keys (ephemeral, regenerated per deploy)
+
+All five follow the same pattern: Terraform creates the SA + IAM bindings; a Makefile target runs `gcloud iam service-accounts keys create`, scp's the JSON to the VM, and applies it as a Kubernetes Secret. Old keys auto-prune to the 3 newest before each generation to stay under GCP's 10-keys-per-SA cap.
+
+| Makefile target | SA email pattern | K8s Secret | Namespace | Replicated to | Consumed by |
+|---|---|---|---|---|---|
+| `make gcp-bootstrap-key` | `whisperops-bootstrap@…` | `gcp-bootstrap-sa-key` | `crossplane-system` | — | Crossplane providers via ProviderConfig |
+| `make kagent-vertex-key` | `whisperops-kagent-vertex@…` | `kagent-vertex-credentials` | `kagent-system` | `agent-*` (Reflector) | kagent controller for Vertex Gemini Flash inference |
+| `make tempo-gcs-key` | `whisperops-tempo-writer@…` | `tempo-gcs-credentials` | `observability` | — | Tempo writes WAL + blocks to `gs://whisperops-tempo-blocks/` |
+| `make grafana-gcm-key` | `whisperops-grafana-gcm@…` | `grafana-gcm-credentials` | `observability` | — | Grafana GCP Cloud Monitoring datasource |
+| `make langfuse-pg-key` | `whisperops-langfuse-pg-proxy@…` | `langfuse-postgres-credentials` | `observability` | — | Cloud SQL Auth Proxy sidecar in `langfuse-web` + `langfuse-worker` pods |
+
+**Rotation:** every `make deploy` issues a fresh key, applies it, and prunes the oldest GCP keys to the newest 3 per SA. There is no rotation runbook — the deploy *is* the rotation.
+
+**Why ephemeral:** every `tf-apply` may recreate the SA (especially the bootstrap SA whose policy mutates), so any stored key would go stale within one cycle. Per CLAUDE.md gotcha #10.
+
+---
+
+## 2. Terraform random-password resources (stable across deploys)
+
+These exist for the Langfuse self-hosted Postgres backing (`whisperops-langfuse-pg`). Generated once by Terraform, written to tfstate, and consumed via Terraform outputs. They survive across destroys+deploys **as long as the tfstate bucket survives**.
+
+| Terraform resource | Purpose | Surfaced via |
+|---|---|---|
+| `random_password.langfuse_db` | Postgres password for the `langfuse` database user | Bundled into `langfuse_pg_database_url` output (sensitive) |
+| `random_password.langfuse_nextauth_secret` | NextAuth.js session signing secret in the Langfuse web pod | Output `langfuse_nextauth_secret` (sensitive) |
+| `random_id.langfuse_encryption_key` (64-char hex) | At-rest encryption key for Langfuse-stored secrets (trace payloads, etc.) | Output `langfuse_encryption_key` (sensitive) |
+| `random_password.langfuse_salt` | Password hashing salt for Langfuse-managed users | Output `langfuse_salt` (sensitive) |
+
+All four are read by `make langfuse-pg-key` and folded into the 6-key `langfuse-postgres-credentials` Secret on each deploy. They do **not** rotate per deploy — only on `terraform taint random_password.<name>` followed by `make langfuse-pg-key`. The `ABANDON` deletion policy on the Cloud SQL user/database means a regular `terraform destroy` cascades cleanly without rotating these.
+
+---
+
+## 3. Langfuse application keys (operator-issued in-cluster, persists with PG data)
+
+After the cluster is up, the operator port-forwards to the in-cluster Langfuse UI:
 
 ```bash
-# 1. Tools
-brew install sops age yq jq                        # macOS
+kubectl -n observability port-forward svc/langfuse-web 3000:3000
+# browse http://localhost:3000 → sign up to create the first user
+# → create a project → Settings → API Keys → New
+```
 
-# 2. Generate your personal age key (keep age.key OFFLINE; commit nothing)
-age-keygen -o age.key
-PUB=$(age-keygen -y age.key)                       # age1...
+The Langfuse UI issues:
+- `pk-lf-…` (public key — embedded in client SDKs)
+- `sk-lf-…` (secret key — server-side only)
 
-# 3. Point the repo's .sops.yaml at your public key
-sed -i.bak "s|^      age: .*|      age: >-\n      $PUB|" .sops.yaml
+These are **not** stored in SOPS, **not** in Terraform, **not** in a Makefile target. They live in the Langfuse PG database and are entered into client configs by hand (chat-frontend, sandbox, budget-controller — when the budget-controller refactor lands and it needs to call the Langfuse REST API).
 
-# 4. Re-encrypt every existing secret with your key
-#    (you'll need the maintainer's key once to decrypt; alternatively
-#     wipe secrets/ and re-create per the per-secret guides below)
-for f in secrets/*.enc.yaml; do
-  sops updatekeys -y "$f"
+**Rotation:** rotate in the Langfuse UI → update consumer configs → rolling restart.
+
+---
+
+## 4. Reflector-managed token (refreshes every 30 min)
+
+| Secret | Namespace | Replicated to | Refreshed by |
+|---|---|---|---|
+| `ar-pull-secret-source` | `crossplane-system` | `agent-*` + `whisperops-system` (Reflector annotations) | 30-min CronJob in `crossplane-system` that runs `gcloud auth print-access-token` and patches the Secret |
+
+This is the Artifact Registry image-pull credential. Reflector replicates the freshly-rotated token to every consumer namespace within seconds of the CronJob completing.
+
+**Failure mode:** if the CronJob fails (e.g. bootstrap SA key expired), `imagePullSecrets: [ar-pull-secret]` references resolve to a stale token, agent + budget-controller pods enter `ImagePullBackOff`. Recovery: `make gcp-bootstrap-key` to refresh the underlying auth, then the next CronJob tick refreshes the pull-secret.
+
+---
+
+## 5. Two credentials that do NOT exist anywhere in this repo
+
+To pre-empt confusion:
+
+- **No OpenAI API key.** Gemini Flash (Vertex AI) handles inference; Vertex `text-embedding-005` will handle embeddings when the Supabase data layer ships. The Vertex SA (`whisperops-kagent-vertex`) authenticates both via the same JSON key.
+- **No Supabase SaaS keys.** The previous SaaS-Supabase integration was retired on 2026-05-14 (see [`PENDING_whisperops.md §C1 + §C4`](../.claude/sdd/features/PENDING_whisperops.md)). A future self-hosted Supabase data layer (sketched in [`notes/supabase-data-layer-idea.md`](../notes/supabase-data-layer-idea.md)) will reuse the in-cluster Postgres pattern, not SaaS keys.
+
+---
+
+## 6. Tear-down
+
+To wipe all credentials from a running cluster (e.g. when rotating compromised SA keys):
+
+```bash
+# Kubernetes Secrets — these will be recreated by the next `make deploy`
+kubectl -n kagent-system delete secret kagent-vertex-credentials
+kubectl -n observability delete secret \
+    tempo-gcs-credentials grafana-gcm-credentials langfuse-postgres-credentials
+kubectl -n crossplane-system delete secret gcp-bootstrap-sa-key ar-pull-secret-source
+
+# Reflector-replicated copies in agent-* and whisperops-system will be re-created
+# automatically once the source Secrets are re-applied.
+
+# GCP-side SA keys — list and delete obsolete ones (deploy auto-prunes to 3 newest,
+# but full revocation requires explicit gcloud delete):
+for sa in whisperops-bootstrap whisperops-kagent-vertex whisperops-tempo-writer \
+          whisperops-grafana-gcm whisperops-langfuse-pg-proxy; do
+    gcloud iam service-accounts keys list --iam-account="${sa}@${PROJECT_ID}.iam.gserviceaccount.com" \
+        --filter='~googleManaged' --format='value(name)' | xargs -I {} \
+        gcloud iam service-accounts keys delete {} --iam-account="${sa}@${PROJECT_ID}.iam.gserviceaccount.com" --quiet
 done
 
-# 5. Confirm round-trip
-make decrypt-secrets   # writes *.dec.yaml (gitignored), prints check marks
-```
-
-If you don't have access to the existing keys (the common case for a fork), skip step 4 and use the **per-secret recreation** sections below to build each `*.enc.yaml` from scratch with your own credentials.
-
----
-
-## 1. Why SOPS + age?
-
-| Choice | Why |
-|---|---|
-| **SOPS** (Mozilla) | encrypts only the **values** of YAML/JSON, leaving keys readable for diff/review. Works with KMS, age, GPG, etc. |
-| **age** | modern, simple X25519-based encryption. No key servers, no web of trust. One file (`age.key`) holds the operator's identity. |
-| **Per-environment key** | each operator/environment generates their own `age.key`. The `.sops.yaml` lists which public keys can decrypt. Adding a teammate = appending their pubkey. |
-
----
-
-## 2. Generate your `age.key`
-
-```bash
-# Install age (one of):
-brew install age            # macOS
-apt-get install age          # Debian/Ubuntu
-winget install age           # Windows
-
-# Generate identity
-age-keygen -o age.key
-chmod 600 age.key
-
-# Print the public key (this is what you put in .sops.yaml)
-age-keygen -y age.key
-# → age1abc123...xyz
-```
-
-**Critical hygiene:**
-- `age.key` is **gitignored** in this repo (`/age.key` in `.gitignore`). Verify before any commit.
-- Back it up to a password manager / encrypted volume. If you lose it, you cannot decrypt any `*.enc.yaml`.
-- For a team, every operator generates their own `age.key`. The `.sops.yaml` lists every operator's **public** key.
-
----
-
-## 3. Configure `.sops.yaml`
-
-The repo's `.sops.yaml` is a single creation rule that targets `secrets/*.enc.yaml`:
-
-```yaml
-creation_rules:
-  - path_regex: secrets/.*\.enc\.yaml$
-    age: >-
-      age1hyy9xutt6aa3y67hea47st085hmnry8wg4qq3rqu7h9nn046hutqnnxvpv
-```
-
-To use **your own** key, replace the `age: >-` value with your public key from §2. To support **multiple** operators, append more keys with newlines:
-
-```yaml
-creation_rules:
-  - path_regex: secrets/.*\.enc\.yaml$
-    age: >-
-      age1abc...you,
-      age1def...teammate1,
-      age1ghi...teammate2
-```
-
-Then run `sops updatekeys secrets/*.enc.yaml` to add the new recipients to existing files.
-
----
-
-## 4. The 3 secrets — what they hold and how to obtain each
-
-Run `ls secrets/` to see the canonical set:
-
-```
-langfuse.enc.yaml              # Langfuse Cloud public + secret keys
-openai.enc.yaml                # OpenAI API key (kagent's querydoc sidecar)
-supabase.enc.yaml              # Supabase URL + keys (currently dormant — see PENDING.C1)
-```
-
-Two GCP Service Account keys are **not** SOPS-encrypted — both are ephemeral, generated fresh per deploy:
-
-- `gcp-bootstrap-sa-key` — generated by `make gcp-bootstrap-key`. Applied to `crossplane-system`. The bootstrap SA is recreated by every `tf-apply`, so any stored key would be stale within one cycle.
-- `kagent-vertex-credentials` — generated by `make kagent-vertex-key`. Applied to `kagent-system` with Reflector annotations that replicate the Secret to every `agent-*` namespace. Holds the JSON key for `whisperops-kagent-vertex@<project>.iam.gserviceaccount.com` (`roles/aiplatform.user`). Mounted on the kagent `app` container at `/var/secrets/google/credentials.json` via `GOOGLE_APPLICATION_CREDENTIALS` env var (volume injection handled by `kagent-postrender.sh`).
-
-Each section below tells you **what credentials you need**, **where to get them**, and **the exact YAML to encrypt**.
-
-### 4.1 `openai.enc.yaml` — OpenAI API key
-
-**What it does:** kagent ships a `querydoc` sidecar that uses OpenAI for retrieval-augmented kagent-doc lookups. Stored as Secret `kagent-openai` in `kagent-system` namespace.
-
-**How to obtain:**
-1. https://platform.openai.com/api-keys → **Create new secret key** → copy `sk-…`
-
-**Plaintext shape:**
-```yaml
-OPENAI_API_KEY: sk-proj-...
-```
-
-### 4.2 `langfuse.enc.yaml` — Langfuse self-hosted OTLP endpoint credentials
-
-**What it does:** dual-export of OTel traces from `opentelemetry-collector` to self-hosted Langfuse (`otlphttp/langfuse` exporter). The `LANGFUSE_HOST` points at the in-cluster Langfuse service. budget-controller no longer reads this Secret (it polls Mimir instead).
-
-**How to obtain:**
-1. Sign up at https://us.cloud.langfuse.com (free tier = 50k events/month, sufficient for prototype)
-2. Create a project → Settings → **API Keys** → **Create new API keys**
-3. Copy both `pk-lf-…` (public) and `sk-lf-…` (secret) immediately — the secret key is shown only once.
-
-**Plaintext shape:**
-```yaml
-LANGFUSE_PUBLIC_KEY: pk-lf-...
-LANGFUSE_SECRET_KEY: sk-lf-...
-LANGFUSE_HOST: https://us.cloud.langfuse.com
-```
-
-> If you sign up on the EU region instead, change `LANGFUSE_HOST` to `https://cloud.langfuse.com`. The `make langfuse-secret` target derives `LANGFUSE_OTLP_ENDPOINT` and `LANGFUSE_BASIC_AUTH` from these three values.
-
-### 4.3 Ephemeral GCP SA keys — observability tier
-
-Three new SA keys are generated per deploy and applied as Kubernetes Secrets via Makefile targets (mirroring the `kagent-vertex-key` pattern). None are SOPS-encrypted.
-
-**`tempo-gcs-credentials`** — Secret in `observability` namespace. Holds a JSON key for `whisperops-tempo-writer@<project>.iam.gserviceaccount.com` (`roles/storage.objectAdmin` on `gs://whisperops-tempo-blocks/`). Tempo reads this at startup to write WAL + trace blocks to GCS.
-
-```bash
-make tempo-gcs-key   # generates key, scp's to VM, applies Secret
-```
-
-**`grafana-gcm-credentials`** — Secret in `observability` namespace. Holds the JSON key for `whisperops-grafana-gcm@<project>.iam.gserviceaccount.com` (`roles/monitoring.viewer`). Grafana reads `${GRAFANA_GCM_SA_EMAIL}` and `${GRAFANA_GCM_PRIVATE_KEY}` from this Secret for the GCP Cloud Monitoring datasource.
-
-```bash
-make grafana-gcm-key   # generates key, scp's to VM, applies Secret
-```
-
-**`langfuse-postgres-credentials`** — Secret in `observability` namespace. Contains `DATABASE_URL` (Cloud SQL connection string for `whisperops-langfuse-pg`) and `CLOUD_SQL_INSTANCE` (connection name for the Auth Proxy sidecar). Terraform outputs `langfuse_pg_connection_name` and `langfuse_pg_database_url` (sensitive); the Makefile target reads these outputs and creates the Secret.
-
-```bash
-make langfuse-pg-key   # reads tf outputs, applies Secret in observability
-```
-
-### 4.4 Bootstrap SA key — ephemeral, not SOPS-encrypted
-
-The bootstrap GCP Service Account (`whisperops-bootstrap@<project>.iam.gserviceaccount.com`) has unconditional `storage.admin`, `iam.serviceAccountAdmin`, `iam.serviceAccountKeyAdmin`, `resourcemanager.projectIamAdmin`, and `artifactregistry.writer`. Conditional bindings don't gate `*.create` operations (the resource doesn't have a name yet at create time), so they were removed in favor of unconditional bindings + naming-convention enforcement at the Backstage scaffolder layer.
-
-Because `tf-apply` recreates this SA on every cycle, any stored key would go stale immediately. The deploy chain handles this:
-
-```bash
-make gcp-bootstrap-key
-# Runs gcloud iam service-accounts keys create, scp's to the VM, applies as
-# Secret gcp-bootstrap-sa-key in crossplane-system. Crossplane providers
-# reference it via ProviderConfig.
-```
-
-You do not need a `crossplane-gcp-creds.enc.yaml` file. The previous SOPS-encrypted approach was deprecated.
-
-### 4.5 Vertex SA key — ephemeral, not SOPS-encrypted
-
-The kagent Vertex SA (`whisperops-kagent-vertex@<project>.iam.gserviceaccount.com`) is granted `roles/aiplatform.user` for Gemini 2.5 Flash inference. Like the bootstrap SA key, this is generated fresh per deploy and never stored in git.
-
-```bash
-make kagent-vertex-key
-# Runs gcloud iam service-accounts keys create, scp's to the VM, applies as
-# Secret kagent-vertex-credentials in kagent-system with Reflector annotations
-# so agent-* namespaces receive a copy. The kagent postRenderer mounts this
-# Secret at /var/secrets/google/credentials.json.
-```
-
-Never create `secrets/vertex.enc.yaml`. The ephemeral pattern (matching gcp-bootstrap-key) is the correct approach.
-
-### 4.6 `supabase.enc.yaml` — dataset profile store (currently dormant)
-
-**What it does (designed intent):** the platform-bootstrap Job uploads dataset profiles (column types, row counts, sample values) to a Supabase Postgres table. Read by Backstage at agent-creation time to populate the dataset dropdown metadata.
-
-**Current state:** No runtime component reads from Supabase. The Planner uses a literal `dataset_id` baked into its system prompt at scaffold time, not a runtime profile lookup. `platform-bootstrap-job` is dormant. The Secret is still expected by preflight checks; provide a valid Supabase project or accept the dormant state — see [`PENDING_whisperops.md §C1`](../.claude/sdd/features/PENDING_whisperops.md) for the product decision (delete / keep dormant / wire for real).
-
-**How to obtain:**
-1. https://supabase.com/dashboard → **New Project** (free tier OK)
-2. Project Settings → **API** → copy:
-   - Project URL (`https://<ref>.supabase.co`)
-   - `service_role` key (starts with `eyJ…`, full RW)
-   - `anon` key (read-only, used by the chat UI for unauth'd dataset enum lookup)
-
-**Plaintext shape:**
-```yaml
-SUPABASE_URL: https://<ref>.supabase.co
-SUPABASE_SERVICE_ROLE_KEY: eyJ...
-SUPABASE_ANON_KEY: eyJ...
-```
-
-> If you don't want Supabase, the platform tolerates this Secret being absent at the cost of not surfacing dataset profiles in the Backstage form. Future work could swap to a self-hosted Postgres in cluster.
-
----
-
-## 5. Encrypt + verify workflow
-
-For each plaintext file you assembled in §4:
-
-```bash
-# Encrypt in place (or with explicit input)
-SOPS_AGE_KEY_FILE=age.key sops --encrypt \
-  --input-type yaml --output-type yaml \
-  /tmp/<name>.plaintext.yaml > secrets/<name>.enc.yaml
-
-# Wipe the plaintext (don't leave it on disk)
-shred -u /tmp/<name>.plaintext.yaml 2>/dev/null || rm /tmp/<name>.plaintext.yaml
-
-# Verify round-trip
-SOPS_AGE_KEY_FILE=age.key sops --decrypt secrets/<name>.enc.yaml | head -3
-```
-
-The repo's `make decrypt-secrets` target does the round-trip for **all** files:
-
-```bash
-make decrypt-secrets    # writes secrets/*.dec.yaml (gitignored)
-ls secrets/*.dec.yaml
-rm secrets/*.dec.yaml   # or leave them — they're git-ignored
+# Langfuse application keys — rotate in the UI: Settings → API Keys → Revoke
 ```
 
 ---
 
-## 6. Editing an existing encrypted file
-
-```bash
-SOPS_AGE_KEY_FILE=age.key sops secrets/anthropic.enc.yaml
-# opens $EDITOR with decrypted content; saves back encrypted
-```
-
-This is the canonical way to rotate a key — never decrypt-then-edit-then-re-encrypt manually.
-
----
-
-## 7. Adding a teammate
-
-1. Teammate generates their `age.key` (§2), shares the **public** key (`age1…`).
-2. Add to `.sops.yaml`:
-   ```yaml
-   creation_rules:
-     - path_regex: secrets/.*\.enc\.yaml$
-       age: >-
-         age1hyy9...your_existing_key,
-         age1abc...new_teammate
-   ```
-3. Re-key existing files:
-   ```bash
-   sops updatekeys -y secrets/*.enc.yaml
-   ```
-4. Commit `.sops.yaml` + the re-keyed `*.enc.yaml` files.
-
----
-
-## 8. Materializing secrets in the cluster
-
-After the `*.enc.yaml` files are encrypted with your keys, the platform layer applies them as Kubernetes Secrets through:
-
-| Secret | Target ns | Mechanism |
-|---|---|---|
-| `kagent-vertex-credentials` | `kagent-system` + replicated via Reflector to `agent-*` | `make kagent-vertex-key` (invoked by `make deploy`) generates fresh Vertex SA JSON key, applies + annotates for Reflector |
-| `kagent-openai` | `kagent-system` | `kubectl create secret` from SOPS-decrypt |
-| `langfuse-credentials` | `observability` (source) + replicated to `whisperops-system` + `agent-*` via Reflector | `make langfuse-secret` decrypts, derives 5 keys, applies + annotates for Reflector |
-| `tempo-gcs-credentials` | `observability` | `make tempo-gcs-key` (ephemeral, fresh per deploy) — Tempo GCS WAL write access |
-| `grafana-gcm-credentials` | `observability` | `make grafana-gcm-key` (ephemeral, fresh per deploy) — Grafana GCP Cloud Monitoring datasource |
-| `langfuse-postgres-credentials` | `observability` | `make langfuse-pg-key` — reads `terraform output langfuse_pg_*`, applies DATABASE_URL + CLOUD_SQL_INSTANCE |
-| `gcp-bootstrap-sa-key` | `crossplane-system` | `make gcp-bootstrap-key` (ephemeral, fresh per deploy) |
-| `ar-pull-secret-source` | `crossplane-system` (source) + replicated to `agent-*` via Reflector | Crossplane seed Job populates from `gcloud auth print-access-token`; 30-min rotation CronJob refreshes |
-| `supabase-credentials` | `whisperops-system` | Currently dormant — Job that would consume this is not invoked |
-
-The deploy chain handles ordering automatically. `make deploy` is the canonical sequence; see [`OPERATIONS.md`](OPERATIONS.md) for the rollup walkthrough.
-
----
-
-## 9. Common errors & fixes
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `sops: failed to decrypt: no matching age recipient` | Your `age.key` public is not in `.sops.yaml` | Add your pubkey to `.sops.yaml` and run `sops updatekeys` (someone with an existing key must do this) |
-| `MAC mismatch` on decrypt | File was edited outside `sops` (broke the integrity hash) | Re-encrypt from a clean plaintext copy |
-| Crossplane provider reports `error unmarshaling credentials: invalid character '\n' in string literal` | `private_key` in the GCP SA JSON has real newlines, not `\\n` | Re-encrypt the file using the `python3 json.dumps()` flatten step in §4.4 |
-| `SOPS_AGE_KEY_FILE` not set in shell | env var doesn't persist across Claude Code bash invocations and some CI runners | Always pass it inline: `SOPS_AGE_KEY_FILE=age.key sops ...` |
-| Re-encrypting a file produces a huge diff | sops re-rolls the AES key on every write — this is normal. Do not optimize for "minimal diff" | Accept the diff; it's still secure |
-
----
-
-## 10. Tear down
-
-To wipe all secrets from a cluster (e.g. when rotating compromised credentials):
-
-```bash
-kubectl -n kagent-system delete secret kagent-vertex-credentials kagent-openai
-kubectl -n observability delete secret langfuse-credentials
-kubectl -n crossplane-system delete secret gcp-bootstrap-sa-key ar-pull-secret-source
-# Reflector-replicated copies in agent-* and whisperops-system will be re-created
-# automatically once the source Secret is re-populated.
-```
-
-Then re-run the materialization steps in §8 with fresh, rotated values. The Make targets handle most of this automatically on the next `make deploy`.
-
----
-
-## See also
+## 7. Reference
 
 - [`OPERATIONS.md`](OPERATIONS.md) — operator handbook (deploy chain, agent lifecycle)
 - [`SECURITY.md`](SECURITY.md) — threat model, IAM scoping, residual risks
-- [`.sops.yaml`](../.sops.yaml) — current creation rules
-- [`Makefile`](../Makefile) — `decrypt-secrets`, `langfuse-secret`, `gcp-bootstrap-key` targets
+- [`Makefile`](../Makefile) — `gcp-bootstrap-key`, `kagent-vertex-key`, `tempo-gcs-key`, `grafana-gcm-key`, `langfuse-pg-key` targets
+- [`terraform/observability.tf`](../terraform/observability.tf) — random-password resources + Cloud SQL config
 - [`DESIGN_whisperops.md`](../.claude/sdd/features/DESIGN_whisperops.md) — full security model and architecture

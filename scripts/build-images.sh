@@ -12,7 +12,6 @@
 # Build-context rules (verified against each Dockerfile):
 #   sandbox           — repo root (Dockerfile uses COPY src/sandbox/... paths)
 #   budget-controller — src/budget-controller/ (COPY pyproject.toml + main.py)
-#   platform-bootstrap — src/platform-bootstrap/ (COPY pyproject.toml + bootstrap.py + profile_schema.py)
 #   chat-frontend     — src/chat-frontend/ (COPY package.json then COPY . .)
 
 set -euo pipefail
@@ -53,7 +52,6 @@ sudo gcloud auth configure-docker "${REGISTRY_REGION}-docker.pkg.dev" --quiet
 # All paths relative to REPO_ROOT.
 IMAGES=(
     "budget-controller:src/budget-controller/Dockerfile:src/budget-controller"
-    "platform-bootstrap:src/platform-bootstrap/Dockerfile:src/platform-bootstrap"
     "sandbox:src/sandbox/Dockerfile:."
     "chat-frontend:src/chat-frontend/Dockerfile:src/chat-frontend"
 )

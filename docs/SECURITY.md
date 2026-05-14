@@ -11,26 +11,34 @@
 | Privileged container escape | Low | Critical | Pod specs declare `privileged: false`, `allowPrivilegeEscalation: false`, `capabilities: drop: [ALL]` |
 | Untrusted image supply chain | Low | High | Per-namespace Kyverno policy allowlist for image registries (currently the namespaced `agent-egress-policy` is enforced; broader cluster-wide policies are in the internal backlog) |
 | Cross-agent A2A traffic interception | Low | Medium | A2A flows through kagent-controller :8083 on the cluster pod network; the `allow-a2a` NetworkPolicy generated per-namespace permits cluster pod-CIDR egress on :8083. Controller is the sole listener. Narrowing via pod label selectors is tracked in PENDING.B5. |
-| SOPS key compromise | Low | Critical | Age key not committed (gitignored); rotate via `age-keygen` + `sops updatekeys` |
-| Bootstrap SA key compromise | Low | High | Key generated fresh per deploy by `make gcp-bootstrap-key`; ephemeral; no stored encrypted copy can leak |
-| Vertex SA key compromise | Low | Medium | Key generated fresh per deploy by `make kagent-vertex-key`; ephemeral; no stored encrypted copy can leak. SA has `roles/aiplatform.user` only — cannot access storage, IAM, or other GCP surfaces |
-| Supabase service key exposure | Low | Low | Currently dormant (no runtime consumer); SOPS-encrypted at rest |
+| Bootstrap SA key compromise | Low | High | Key generated fresh per deploy by `make gcp-bootstrap-key`; ephemeral; no stored copy can leak |
+| Vertex SA key compromise | Low | Medium | Key generated fresh per deploy by `make kagent-vertex-key`; ephemeral; no stored copy can leak. SA has `roles/aiplatform.user` only — cannot access storage, IAM, or other GCP surfaces |
+| Observability SA key compromise | Low | Low | `tempo-gcs-credentials`, `grafana-gcm-credentials`, `langfuse-postgres-credentials` keys generated fresh per deploy; scoped to single buckets / read-only monitoring / Cloud SQL Auth Proxy respectively |
+| Langfuse application key exposure | Low | Low | Keys issued in the self-hosted UI and entered into client configs by hand; rotate via UI revoke |
 
 ## Secret Lifecycle
 
+There is no operator-supplied secret material in this repo. Every credential is generated at deploy time from a Terraform-managed source.
+
 ```
-Operator's age key (./age.key — gitignored)
-  → SOPS encrypts secrets/{langfuse,openai,supabase}.enc.yaml
-  → Committed to git (ciphertext only)
-  → make deploy invokes Make targets that decrypt and apply during _vm-bootstrap
-    (langfuse-secret; gcp-bootstrap-key and kagent-vertex-key generate fresh keys)
-  → K8s Secrets in source namespaces (kagent-system, observability,
-    crossplane-system)
-  → Reflector replicates downstream copies into agent-* namespaces
+Terraform creates SAs + random_password resources
+  → make deploy invokes per-SA Makefile targets:
+    gcp-bootstrap-key, kagent-vertex-key, tempo-gcs-key, grafana-gcm-key, langfuse-pg-key
+  → Each target runs `gcloud iam service-accounts keys create`, scp's the
+    JSON to the VM, and applies it as a K8s Secret in the source namespace
+    (kagent-system, observability, or crossplane-system)
+  → Reflector replicates downstream copies into agent-* namespaces where needed
+    (kagent-vertex-credentials, ar-pull-secret)
   → Mounted as env vars or files into Pods (GOOGLE_APPLICATION_CREDENTIALS env var
-    + /var/secrets/google volume on kagent app container; ar-pull-secret as
-    imagePullSecrets on agent Pod templates; gcp-sa-key as a file mount on the sandbox)
+    + /var/secrets/google volume on kagent + Tempo + Langfuse-proxy containers)
+  → On each subsequent deploy, fresh keys are issued and the oldest 7 per SA
+    are pruned (GCP 10-keys-per-SA cap)
+
+Langfuse application keys are issued by the operator inside the in-cluster
+Langfuse UI on first launch — never stored in git.
 ```
+
+See [`SECRETS.md`](SECRETS.md) for the full credentials inventory.
 
 ## Sandbox Isolation
 
@@ -72,7 +80,7 @@ Per-agent SA (provisioned by Crossplane, one per agent namespace):
 |-----------------|---------------|
 | Network | Kyverno-generated NetworkPolicy; sandbox egress GCS+DNS only |
 | Identity | Per-agent GCP SA via Crossplane; short-lived credentials |
-| Secrets | SOPS+age for git; ESO for cluster delivery |
+| Secrets | Ephemeral SA keys generated per deploy + Terraform random_password for stable PG creds; no git-stored credentials |
 | Workload | Non-root, read-only FS, no privilege escalation, seccomp RuntimeDefault |
 | Compute | Resource limits enforced; budget controller watchdog |
 | Registry | Kyverno allowlist enforced; Gitea as primary registry |

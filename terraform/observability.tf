@@ -117,6 +117,13 @@ module "langfuse_postgres" {
 
   db_name = "langfuse"
 
+  # Skip user/db DELETE API calls on destroy — let the parent SQL instance
+  # destruction cascade. Required because Langfuse v3 grants the langfuse
+  # role ownership of 85+ objects and holds active connections via the
+  # cloud-sql-proxy sidecar, so PG rejects both DROP USER and DROP DATABASE.
+  user_deletion_policy     = "ABANDON"
+  database_deletion_policy = "ABANDON"
+
   ip_configuration = {
     ipv4_enabled                                  = true
     authorized_networks                           = []

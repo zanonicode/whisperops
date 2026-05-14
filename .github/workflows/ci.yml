@@ -24,9 +24,6 @@ jobs:
       - name: Lint sandbox
         run: ruff check src/sandbox/
 
-      - name: Lint platform-bootstrap
-        run: ruff check src/platform-bootstrap/
-
       - name: Lint budget-controller
         run: ruff check src/budget-controller/
 
@@ -91,35 +88,6 @@ jobs:
       - name: Format check
         working-directory: terraform
         run: terraform fmt -check -recursive
-
-  check-sops-files:
-    name: SOPS Encrypted Files Present
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check required encrypted secrets exist
-        run: |
-          REQUIRED=(
-            secrets/anthropic.enc.yaml
-            secrets/openai.enc.yaml
-            secrets/supabase.enc.yaml
-            secrets/langfuse.enc.yaml
-            secrets/crossplane-gcp-creds.enc.yaml
-          )
-          FAIL=0
-          for f in "${REQUIRED[@]}"; do
-            if [[ ! -f "$f" ]]; then
-              echo "MISSING: $f"
-              FAIL=1
-            elif ! grep -q 'sops:' "$f"; then
-              echo "NOT ENCRYPTED: $f (missing 'sops:' key)"
-              FAIL=1
-            else
-              echo "OK: $f"
-            fi
-          done
-          exit $FAIL
 
   run-evals:
     name: Run Fixture Evals

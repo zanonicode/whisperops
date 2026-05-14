@@ -4,9 +4,9 @@
 >
 > 1. **Deploy chain** — `make deploy` rollup, what each step does, recovery
 > 2. **Agent lifecycle** — scaffolding an agent via Backstage; chatting; teardown
-> 3. **Observability navigation** — Grafana, Tempo, Loki, Mimir, Langfuse Cloud
+> 3. **Observability navigation** — Grafana, Tempo, Loki, Mimir, self-hosted Langfuse
 >
-> Audience: senior platform engineer comfortable with Kubernetes, Helm, GCP, SOPS. We don't re-explain those primitives. For architectural *why* see [`ARCHITECTURE.md`](ARCHITECTURE.md) and the internal `DESIGN_whisperops.md`.
+> Audience: senior platform engineer comfortable with Kubernetes, Helm, GCP, Terraform. We don't re-explain those primitives. For architectural *why* see [`ARCHITECTURE.md`](ARCHITECTURE.md) and the internal `DESIGN_whisperops.md`.
 
 ---
 
@@ -19,27 +19,15 @@
 | `gcloud` authed (Application Default Credentials) | Yes | `gcloud auth application-default print-access-token` |
 | Target GCP project ID known and billing enabled | Yes | `gcloud projects describe <id>` |
 | Repo cloned at a stable path | Yes | `git rev-parse --show-toplevel` |
-| age key at `./age.key` (root of repo) | Yes | `[ -f age.key ]` |
-| `SOPS_AGE_KEY_FILE=$PWD/age.key` exported | Yes | `echo $SOPS_AGE_KEY_FILE` |
-| `secrets/{langfuse,openai,supabase}.enc.yaml` present and SOPS-encrypted | Yes | `grep -l '^sops:' secrets/*.enc.yaml | wc -l` → 3 |
 | `terraform/envs/demo/{terraform,backend}.tfvars` customised (no `YOUR_GCP_PROJECT_ID` placeholders) | Yes | `make preflight` |
-| Tooling locally: `terraform>=1.7`, `gcloud`, `age`, `sops`, `kubectl>=1.29`, `helm>=3.14`, `helmfile>=0.163`, `make`, `node>=20`, `python3.12`, `yq`, `jq` | Yes | `which yq jq` |
+| Tooling locally: `terraform>=1.7`, `gcloud`, `kubectl>=1.29`, `helm>=3.14`, `helmfile>=0.163`, `make`, `node>=20`, `python3.12`, `yq`, `jq` | Yes | `which yq jq` |
 | `cnoe.localtest.me` resolves to `127.0.0.1` | Yes | `dig +short cnoe.localtest.me` |
-| Local clock not skewed (SOPS will refuse decrypts otherwise) | Yes | `sudo systemctl status systemd-timesyncd` (Linux) / `sntp -sS time.apple.com` (macOS) |
 
-To decrypt secrets to plaintext siblings for inspection (gitignored):
-
-```bash
-make decrypt-secrets
-# Produces secrets/{langfuse,openai,supabase}.dec.yaml
-```
-
-You don't need this for the deploy — `_vm-bootstrap` and the secret Make targets decrypt on demand.
+No operator-supplied secrets are needed — every credential whisperops uses is either generated at deploy time from Terraform-managed service accounts or issued in-cluster by the operator after first launch (Langfuse application keys). See [`SECRETS.md`](SECRETS.md) for the full credentials inventory.
 
 ### The rollup
 
 ```bash
-export SOPS_AGE_KEY_FILE=$PWD/age.key
 gcloud auth application-default login
 
 make deploy
@@ -49,14 +37,14 @@ make deploy
 
 | Step | What it does | Time |
 |---|---|---|
-| **preflight** | Verifies gcloud auth, tfvars placeholders cleared, age.key readable, three SOPS files encrypted (langfuse/openai/supabase), tfstate bucket exists, `cnoe.localtest.me → 127.0.0.1` | ~5 s |
+| **preflight** | Verifies gcloud auth, tfvars placeholders cleared, tfstate bucket exists, `cnoe.localtest.me → 127.0.0.1` | ~5 s |
 | **tf-apply** | Provisions VM + VPC + AR repo + bootstrap SA (with IAM bindings) + Vertex AI API enable + kagent Vertex SA (`whisperops-kagent-vertex` with `roles/aiplatform.user`) + datasets bucket + per-deploy external IP + firewall rules | ~3 min |
 | **upload-datasets** | Uploads `datasets/*.csv` to `gs://<project>-datasets/` (idempotent via `--no-clobber`) | ~30 s |
 | **copy-repo** | rsync repo to `/tmp/whisperops` on the VM. Polls SSH:22 up to 5 min — `tf-apply` returns before sshd is ready | ~1 min |
 | **gcp-bootstrap-key** | Generates fresh SA key, scp's to VM, applies as Secret `gcp-bootstrap-sa-key` in `crossplane-system`. Waits up to 20 min for cloud-init to ready kubectl + sudo NOPASSWD + cluster API. | ~10 s after wait |
 | **kagent-vertex-key** | Generates fresh Vertex SA JSON key for `whisperops-kagent-vertex`, scp's to VM, applies as Secret `kagent-vertex-credentials` in `kagent-system` with Reflector annotations → replicates to `agent-*` namespaces. | ~10 s |
-| **build-images** | SSH to VM, build 4 whisperops images (`budget-controller`, `platform-bootstrap`, `sandbox`, `chat-frontend`), push to Artifact Registry | ~5 min |
-| **deploy-vm** | SSH to VM, run `_vm-bootstrap` inside. Polls `/var/log/whisperops-bootstrap.log` for "whisperops bootstrap complete" sentinel up to 25 min — the startup-script does `idpbuilder create` and an ArgoCD-Synced/Healthy gate. Then helmfile apply (with postRenderer injecting Vertex SA-key volume on kagent Deployment), push the repo + root-app to in-cluster Gitea, materialize `langfuse-credentials` Secret, sync Backstage templates with sed-baked `base_domain` + `project_id`, regenerate external Ingresses, update the `platform-config` ConfigMap. | ~10-15 min |
+| **build-images** | SSH to VM, build 3 whisperops images (`budget-controller`, `sandbox`, `chat-frontend`), push to Artifact Registry | ~5 min |
+| **deploy-vm** | SSH to VM, run `_vm-bootstrap` inside. Polls `/var/log/whisperops-bootstrap.log` for "whisperops bootstrap complete" sentinel up to 25 min — the startup-script does `idpbuilder create` and an ArgoCD-Synced/Healthy gate. Then helmfile apply (with postRenderer injecting Vertex SA-key volume on kagent Deployment), push the repo + root-app to in-cluster Gitea, sync Backstage templates with sed-baked `base_domain` + `project_id`, regenerate external Ingresses, update the `platform-config` ConfigMap. | ~10-15 min |
 
 **Total clean deploy: ~25 min.** Idempotent — re-running on existing infra is a no-op except `build-images`, which always rebuilds.
 
@@ -108,11 +96,10 @@ The smoke target runs on the VM via SSH because the operator's local kubectl has
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| `make preflight` fails with "✗ SOPS_AGE_KEY_FILE unset or unreadable" | Env var not exported | `export SOPS_AGE_KEY_FILE=$PWD/age.key` |
 | `make destroy` hangs at "Waiting for Crossplane finalizers" then times out | An aborted destroy left finalizers on per-agent CRs | Force-clear finalizers per the `runbooks/incident-response.md` "Crossplane Stuck Reconciling" section, then `make destroy SKIP_CROSSPLANE=1 FORCE=1 PROJECT_ID=<id>` |
+| `make destroy` fails with "user/database cannot be dropped (85 objects depend on it)" on Cloud SQL | Langfuse PG role owns many objects + holds active connections | Already fixed via `user_deletion_policy = "ABANDON"` + `database_deletion_policy = "ABANDON"` in [`terraform/observability.tf`](../terraform/observability.tf); if a pre-fix state slips through, `gcloud sql instances delete whisperops-langfuse-pg` directly, then `terraform state rm module.langfuse_postgres`, then re-run `make destroy` |
 | `make deploy` from a Mac with Docker running locally — build slow / inconsistent | The build runs on the VM, not locally; local Docker is irrelevant but may cause confusion | Don't worry about local Docker; the build happens on the VM |
 | All sslip.io URLs change after a destroy + redeploy | The VM external IP is allocated fresh on every `tf-apply` cycle | Fetch the new IP per the snippet above; Ingresses are regenerated automatically by `_vm-bootstrap` |
-| `sops --decrypt` fails with "Error getting data key: 0 successful groups required, got 0" on a fresh laptop | Local clock skew | Resync system time (`sntp -sS time.apple.com` on macOS, `systemctl status systemd-timesyncd` on Linux) |
 | `chat-frontend` pod `ImagePullBackOff` mid-day | `ar-pull-secret` token expired and Reflector hasn't replicated the refreshed copy yet | The 30-min rotation CronJob should self-heal; force-restart Reflector pods if it doesn't: `kubectl delete pod -n reflector -l app.kubernetes.io/name=reflector` |
 | `kagent-controller` pod `CrashLoopBackOff` immediately after deploy | `kagent-vertex-credentials` Secret missing or not yet created | `kubectl get secret kagent-vertex-credentials -n kagent-system`; re-run `make kagent-vertex-key` if Secret is absent |
 
@@ -380,7 +367,7 @@ In Grafana, **Explore → Mimir** (datasource uid: `mimir`). Key metric namespac
 ### Cross-references
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — what each component does and how the data flows
-- [`SECRETS.md`](SECRETS.md) — SOPS + age workflow, what each Secret holds
+- [`SECRETS.md`](SECRETS.md) — credentials inventory: what each Secret holds, where it comes from, how it rotates
 - [`SECURITY.md`](SECURITY.md) — threat model, IAM scoping, residual risks
 - [`runbooks/budget-kill-switch.md`](runbooks/budget-kill-switch.md) — budget breach → scale-to-zero procedure
 - [`runbooks/slo-burn-alert.md`](runbooks/slo-burn-alert.md) — SLO burn alert triage

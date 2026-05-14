@@ -5,9 +5,8 @@ An Internal Developer Platform that ships isolated, governed, observable Data An
 ## Quick start
 
 ```bash
-# 1. One-time per machine: customize Terraform vars + place ./age.key (out-of-band).
-#    See docs/SECRETS.md for how to bring your own SOPS-encrypted credentials.
-export SOPS_AGE_KEY_FILE=$PWD/age.key
+# 1. One-time per machine: authenticate gcloud.
+#    No SOPS/age key required — see docs/SECRETS.md for the credential model.
 gcloud auth application-default login
 
 # 2. Edit terraform/envs/demo/{terraform,backend}.tfvars with your project_id + tfstate bucket.
@@ -78,7 +77,7 @@ Architectural specifics worth knowing up front:
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | **Operator handbook** — deploy chain, Backstage agent lifecycle, observability navigation. Start here. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture — components, request flow, trust boundaries |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security model — isolation, secrets, residual risks |
-| [`docs/SECRETS.md`](docs/SECRETS.md) | **SOPS + age guide** — generate your own `age.key`, build each `secrets/*.enc.yaml` from your own credentials, materialization order |
+| [`docs/SECRETS.md`](docs/SECRETS.md) | **Credentials inventory** — what each Kubernetes Secret holds, where it comes from (Terraform / Makefile / Langfuse UI), how it rotates |
 | [`docs/runbooks/incident-response.md`](docs/runbooks/incident-response.md) | Incident procedures (budget breach, sandbox failures, Crossplane stuck) |
 | `.claude/sdd/features/DESIGN_whisperops.md` | Full architecture spec. Internal-only. |
 | `.claude/sdd/features/DEFINE_whisperops.md` | Acceptance tests, success criteria. Internal-only. |
@@ -91,7 +90,6 @@ Architectural specifics worth knowing up front:
 |---|---|---|
 | `terraform` | ≥ 1.7 | Cloud floor |
 | `gcloud` | latest | GCP auth |
-| `age` + `sops` | latest | Secret encryption |
 | `kubectl` | ≥ 1.29 | Cluster interaction |
 | `helm` | ≥ 3.14 | Chart rendering |
 | `helmfile` | ≥ 0.163 | Platform bootstrap |
@@ -142,15 +140,14 @@ Backstage SSO via Keycloak requires an SSH tunnel — see [`docs/OPERATIONS.md`]
 
 | Target | Description |
 |---|---|
-| `make preflight` | Verify gcloud, tfvars, APIs, tfstate bucket, DNS, SOPS keyfile, encrypted secrets |
-| `make deploy` | Full rollup: preflight → tf-apply → upload-datasets → copy-repo → gcp-bootstrap-key → build-images → deploy-vm |
+| `make preflight` | Verify gcloud, tfvars, APIs, tfstate bucket, DNS |
+| `make deploy` | Full rollup: preflight → tf-apply → upload-datasets → copy-repo → ephemeral SA keys → build-images → deploy-vm |
 | `make destroy FORCE=1 PROJECT_ID=<id>` | Full teardown: empty buckets → drain Crossplane → drop Argo CRDs → orphan firewalls → terraform destroy → orphan IAM cleanup |
 | `make smoke-test` | Assert platform up, agents reachable, ArgoCD healthy (runs on VM via SSH) |
-| `make langfuse-secret` | Materialize `langfuse-credentials` Secret in `observability` ns from SOPS-encrypted source |
 | `make kagent-vertex-key` | Generate fresh Vertex SA key and apply as Secret `kagent-vertex-credentials` in `kagent-system` |
+| `make tempo-gcs-key` / `make grafana-gcm-key` / `make langfuse-pg-key` | Generate fresh observability SA keys and apply as Secrets in `observability` ns |
 | `make external-ingresses VM_IP=<ip>` | Regenerate sslip.io ingresses for the current VM IP |
 | `make upload-datasets` | Upload `datasets/*.csv` to `gs://whisperops-datasets/` (also auto-invoked by `make deploy`) |
-| `make decrypt-secrets` | Decrypt `secrets/*.enc.yaml` → `secrets/*.dec.yaml` (gitignored) |
 | `make lint` | Run all linters (ruff, mypy, tsc, helm lint, terraform validate) |
 | `make help` | List all targets |
 
@@ -166,7 +163,7 @@ The three CSVs ship under `datasets/` and are uploaded to `gs://<project>-datase
 
 ## Security notes
 
-- All secrets are SOPS+age encrypted in git — never commit plaintext keys.
+- No credentials are stored in git. SA keys are generated fresh per `make deploy` from Terraform-managed service accounts; Langfuse application keys are issued by the operator inside the in-cluster Langfuse UI.
 - Sandbox pods run with `readOnlyRootFilesystem`, no SA token mount, 4 Gi memory cap, NetworkPolicy egress restricted to GCS + DNS + the in-cluster OTel collector.
 - Per-agent GCP SA is scoped to its own bucket (admin) and the shared datasets bucket (read). Cross-namespace pod-to-pod traffic denied by Kyverno-generated NetworkPolicy.
 - Bootstrap SA bindings are unconditional (IAM Conditions can't gate `*.create` operations because `resource.name` is empty at create time). The naming convention (`agent-*`) is enforced at the Backstage template level. Blast radius is bounded at "who can scaffold via Backstage."

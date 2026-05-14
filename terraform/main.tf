@@ -174,7 +174,7 @@ module "artifact_registry" {
   location      = var.region
   format        = "DOCKER"
   repository_id = "whisperops-images"
-  description   = "Docker images for the whisperops platform (sandbox, chat-frontend, platform-bootstrap, budget-controller)."
+  description   = "Docker images for the whisperops platform (sandbox, chat-frontend, budget-controller)."
   labels        = local.common_labels
 
   cleanup_policies = {

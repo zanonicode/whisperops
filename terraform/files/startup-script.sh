@@ -56,9 +56,9 @@ curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl
 install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
 rm /tmp/kubectl
 
-# 3a.1. helm + helmfile + sops (needed by _vm-bootstrap Makefile target)
-# _vm-bootstrap calls helmfile + sops; bake them into the startup-script so the
-# operator never has to install them by hand.
+# 3a.1. helm + helmfile (needed by _vm-bootstrap Makefile target)
+# _vm-bootstrap calls helmfile; bake it into the startup-script so the
+# operator never has to install it by hand.
 log "Installing helm"
 # Pin to a specific version for reproducibility.
 HELM_VERSION="3.20.2"
@@ -77,13 +77,6 @@ HELMFILE_VERSION="1.1.1"
 curl -fsSL "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C /usr/local/bin helmfile
 chmod +x /usr/local/bin/helmfile
-
-log "Installing sops"
-# Same SIGPIPE risk as helmfile above — pin to a known-good version.
-SOPS_VERSION="3.13.0"
-curl -fsSL "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.amd64" \
-    -o /usr/local/bin/sops
-chmod +x /usr/local/bin/sops
 
 log "Installing yq"
 # Required by the kagent helmfile postRenderer to inject the nginx-timeout

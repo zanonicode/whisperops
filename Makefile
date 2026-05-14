@@ -1,12 +1,11 @@
 .DEFAULT_GOAL := help
 .PHONY: help preflight deploy destroy smoke-test endpoints \
         tf-init tf-plan tf-apply \
-        platform-bootstrap regenerate-profiles \
-        langfuse-secret kagent-vertex-key \
+        kagent-vertex-key \
         tempo-gcs-key grafana-gcm-key langfuse-pg-key \
         external-ingresses \
         drain-crossplane \
-        upload-datasets decrypt-secrets \
+        upload-datasets \
         lint \
         copy-repo gcp-bootstrap-key build-images deploy-vm _vm-bootstrap \
         _push-whisperops-to-gitea \
@@ -16,7 +15,6 @@
 
 TERRAFORM_DIR := terraform
 TF_ENV_DIR    := terraform/envs/demo
-SECRETS_DIR   := secrets
 DATASETS_DIR  := datasets
 
 # Resolve PROJECT_ID from tfvars when the operator did not pass it on the CLI.
@@ -66,17 +64,10 @@ preflight: ## Verify the operator's local + GCP environment is ready to deploy
 	    exit 1; \
 	fi
 	@echo "  ✓ cnoe.localtest.me → 127.0.0.1"
-	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
-		|| (echo "  ✗ SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
-	@echo "  ✓ SOPS_AGE_KEY_FILE points at a readable key"
-	@# The bootstrap SA key is generated fresh per deploy via `make gcp-bootstrap-key` \
-	@# rather than stored encrypted: tf-apply recreates the SA on every destroy+create \
-	@# cycle, which invalidates any previously-issued key. \
-	@for f in openai supabase langfuse; do \
-		[ -f $(SECRETS_DIR)/$$f.enc.yaml ] && grep -q '^sops:' $(SECRETS_DIR)/$$f.enc.yaml \
-			|| (echo "  ✗ secrets/$$f.enc.yaml missing or unencrypted" && exit 1); \
-	done
-	@echo "  ✓ All required SOPS secrets present and encrypted"
+	@# All cloud-side credentials are ephemeral: bootstrap SA key, Vertex SA \
+	@# key, Tempo/Grafana/Langfuse-proxy SA keys are generated fresh per \
+	@# deploy from Terraform-managed service accounts. Langfuse application \
+	@# keys are issued by the operator in the in-cluster Langfuse UI.
 	@echo "✓ Pre-flight passed"
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
@@ -86,8 +77,6 @@ deploy: preflight tf-apply upload-datasets copy-repo gcp-bootstrap-key kagent-ve
 	@# runnable for debugging (e.g. `make build-images` alone after a code change).
 	@# Sentinels in copy-repo (SSH:22 wait) and deploy-vm (startup-script-complete
 	@# wait) make the chain robust against tf-apply→VM-ready and idpbuilder timing.
-	@# platform-bootstrap is invoked INSIDE _vm-bootstrap, not here — it must run
-	@# against the kind cluster on the VM, not the operator's local kubectl context.
 	@# upload-datasets runs after tf-apply (which creates the bucket) so the shared
 	@# CSV data is available before any agent scaffold queries it.
 	@echo "✓ Deploy complete. Run 'make smoke-test' to verify."
@@ -103,7 +92,7 @@ tf-apply: tf-init ## Apply Terraform (provisions VM, buckets, IAM)
 
 # ── VM bring-up ────────────────────────────────────────────────────────────────
 
-copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.yaml, node_modules, macOS metadata)
+copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, node_modules, macOS metadata)
 	@echo "→ Copying repo to whisperops-vm"
 	@# After tf-apply returns the VM is RUNNING but sshd may not yet be listening
 	@# (30-90s window). Without polling, the tar | ssh below fails fast with
@@ -125,7 +114,6 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 		--exclude='node_modules' \
 		--exclude='dist' \
 		--exclude='__pycache__' \
-		--exclude='secrets/*.dec.yaml' \
 		--exclude='._*' \
 		--exclude='.DS_Store' \
 		-czf - . | \
@@ -134,14 +122,11 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, secrets/*.dec.y
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
 
 gcp-bootstrap-key: ## Generate fresh whisperops-bootstrap SA key + apply as Secret in crossplane-system
-	@# tf-apply destroys + recreates the bootstrap SA on every deploy cycle, which
-	@# wipes any previously-issued keys. Encrypting a key in
-	@# secrets/crossplane-gcp-creds.enc.yaml goes stale every cycle (key id
-	@# mismatch -> "invalid_grant: Invalid JWT Signature" on Crossplane providers,
-	@# blocking all GCP-backed agent scaffolds). Instead, generate a fresh key on
-	@# each deploy from the operator's authenticated gcloud session, scp to the
-	@# VM, and apply directly as the Secret the ProviderConfig already
-	@# references. No SOPS, no ExternalSecret, no stale state.
+	@# Generate a fresh key on each deploy from the operator's authenticated
+	@# gcloud session, scp to the VM, and apply directly as the Secret the
+	@# ProviderConfig already references. tf-apply may recreate the bootstrap
+	@# SA on every destroy+create cycle, so any
+	@# stored key would go stale within one cycle.
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Materializing whisperops-bootstrap SA key as gcp-bootstrap-sa-key Secret"
 	@# This target runs ~T+2min after VM creation, while cloud-init is still
@@ -181,7 +166,7 @@ gcp-bootstrap-key: ## Generate fresh whisperops-bootstrap SA key + apply as Secr
 
 kagent-vertex-key: ## Generate fresh whisperops-kagent-vertex SA key + apply as Secret in kagent-system
 	@# Mirrors gcp-bootstrap-key pattern (CLAUDE.md gotcha #10): ephemeral per
-	@# deploy, never SOPS-encrypted. The gcp-bootstrap-key target already polled
+	@# deploy. The gcp-bootstrap-key target already polled
 	@# cloud-init readiness, so no wait loop needed here.
 	@[ -n "$(PROJECT_ID)" ] || (echo "ERROR: PROJECT_ID not set" && exit 1)
 	@echo "→ Materializing whisperops-kagent-vertex SA key as kagent-vertex-credentials Secret"
@@ -209,7 +194,7 @@ kagent-vertex-key: ## Generate fresh whisperops-kagent-vertex SA key + apply as 
 # ── Observability SA keys ──────────────────────────────────────────────────────
 # Three ephemeral SA keys for the observability tier. All follow the
 # kagent-vertex-key pattern (CLAUDE.md gotcha #10): generated fresh per deploy,
-# never SOPS-encrypted, applied via kubectl on the VM.
+# applied via kubectl on the VM.
 
 tempo-gcs-key: ## Generate fresh whisperops-tempo-writer SA key + apply as Secret tempo-gcs-credentials in observability
 	@# Tempo uses this key to write WAL + trace blocks to gs://whisperops-tempo-blocks/.
@@ -226,6 +211,8 @@ tempo-gcs-key: ## Generate fresh whisperops-tempo-writer SA key + apply as Secre
 	 gcloud compute scp $$TMPF whisperops-vm:/tmp/tempo-gcs-key.json --zone=$(ZONE) >/dev/null; \
 	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=" \
 		set -e; \
+		sudo /usr/local/bin/kubectl get namespace observability >/dev/null 2>&1 \
+			|| sudo /usr/local/bin/kubectl create namespace observability; \
 		sudo /usr/local/bin/kubectl create secret generic tempo-gcs-credentials -n observability \
 			--from-file=credentials.json=/tmp/tempo-gcs-key.json \
 			--from-literal=bucket_name='$$BUCKET' \
@@ -247,6 +234,8 @@ grafana-gcm-key: ## Generate fresh whisperops-grafana-gcm SA key + apply as Secr
 	 PRIVATE_KEY=$$(python3 -c "import json,sys; d=json.load(open('$$TMPF')); print(d['private_key'])"); \
 	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=" \
 		set -e; \
+		sudo /usr/local/bin/kubectl get namespace observability >/dev/null 2>&1 \
+			|| sudo /usr/local/bin/kubectl create namespace observability; \
 		sudo /usr/local/bin/kubectl create secret generic grafana-gcm-credentials -n observability \
 			--from-literal=GRAFANA_GCM_SA_EMAIL=$$SA_EMAIL \
 			--from-literal=GRAFANA_GCM_PRIVATE_KEY='$$PRIVATE_KEY' \
@@ -282,6 +271,8 @@ langfuse-pg-key: ## Read Terraform outputs for Langfuse + generate proxy SA key,
 	 rm -f $$TMPF; \
 	 gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command=" \
 		set -e; \
+		sudo /usr/local/bin/kubectl get namespace observability >/dev/null 2>&1 \
+			|| sudo /usr/local/bin/kubectl create namespace observability; \
 		sudo /usr/local/bin/kubectl create secret generic langfuse-postgres-credentials -n observability \
 			--from-literal=database_url='$$DB_URL' \
 			--from-literal=cloud_sql_instance='$$CONN_NAME' \
@@ -301,7 +292,7 @@ build-images: ## Build whisperops container images on the VM and push to Artifac
 
 deploy-vm: ## Phase 2: SSH into VM and run inside-VM bring-up sequence
 	@# copy-repo only waits for SSH:22, but the VM's startup-script keeps running
-	@# afterwards: it installs helmfile, sops, kind, then runs `idpbuilder create`
+	@# afterwards: it installs helmfile, kind, then runs `idpbuilder create`
 	@# (~5-10 min) and waits up to 900s for all ArgoCD apps to become Synced/Healthy.
 	@# _vm-bootstrap below assumes both the tooling and the IDP layer are already
 	@# up. Without this wait we get either "helmfile: command not found" (if startup
@@ -338,7 +329,6 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	# subsequent calls share the cluster-wide kubeconfig. \
 	export KUBECONFIG=/root/.kube/config; \
 	export HELM_PLUGINS=/usr/local/share/helm/plugins; \
-	export SOPS_AGE_KEY_FILE=/tmp/whisperops/age.key; \
 	echo "→ Deriving VM_IP from GCP metadata server"; \
 	DERIVED_IP=$$(curl -sf -H "Metadata-Flavor: Google" \
 		http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip); \
@@ -386,8 +376,6 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 	}; \
 	echo "→ Pushing whisperops repo to Gitea + applying ArgoCD root-app"; \
 	$(MAKE) _push-whisperops-to-gitea; \
-	echo "→ Materializing langfuse-credentials Secret"; \
-	$(MAKE) langfuse-secret; \
 	echo "→ Observability SA secrets already applied by deploy chain (tempo-gcs-key / grafana-gcm-key / langfuse-pg-key)"; \
 	echo "→ Regenerating external Ingresses"; \
 	$(MAKE) external-ingresses VM_IP="$$DERIVED_IP"; \
@@ -401,13 +389,6 @@ _vm-bootstrap: ## Internal: full bring-up sequence run INSIDE the VM (called by 
 		--from-literal=base_domain="$$DERIVED_IP.sslip.io" \
 		--from-literal=registry_url="$$REGISTRY_URL" \
 		--dry-run=client -o yaml | kubectl apply -f -; \
-	echo "→ Running platform-bootstrap Job (non-fatal — pre-requisites known incomplete)"; \
-	kubectl get namespace platform >/dev/null 2>&1 || kubectl create namespace platform; \
-	helm template platform-bootstrap platform/helm/platform-bootstrap-job \
-		--namespace=platform \
-		--set "image.repository=$${REGISTRY_URL}/platform-bootstrap" \
-		| kubectl apply -n platform -f - \
-		|| echo "  ⚠ platform-bootstrap apply failed; bring-up continues. Fix prereqs and re-run \`make platform-bootstrap\` standalone."; \
 	echo "✓ VM bring-up complete"'
 
 _push-whisperops-to-gitea: ## Create whisperops Gitea org+repo, push repo, apply ArgoCD root-app (run inside VM)
@@ -638,53 +619,6 @@ destroy-agent: ## Tear down ONE scaffolded agent (cluster + GCS bucket + SA + IA
 	@$(MAKE) _clean-orphan-iam-bindings PROJECT_ID=$(PROJECT_ID) 2>&1 | grep -v "^make\[" | tail -3
 	@echo "✓ Agent '$(AGENT)' destroyed. Safe to re-scaffold (same name or different) via Backstage UI."
 
-# ── Platform bootstrap ─────────────────────────────────────────────────────────
-
-platform-bootstrap: ## Run the one-shot Kubernetes bootstrap Job (dataset profiles → Supabase)
-	@# The files under templates/ are Helm templates (`{{ .Release.Namespace }}`,
-	@# etc.), not rendered K8s manifests. `kubectl apply -f templates/` would choke
-	@# on the `{{ }}` syntax — render via `helm template` first.
-	@kubectl get namespace platform >/dev/null 2>&1 || kubectl create namespace platform
-	@helm template platform-bootstrap platform/helm/platform-bootstrap-job \
-		--namespace=platform \
-		| kubectl apply -n platform -f -
-	@kubectl wait --for=condition=complete job/platform-bootstrap --timeout=300s -n platform
-
-regenerate-profiles: ## Re-run platform-bootstrap to refresh dataset profiles in Supabase
-	kubectl delete job platform-bootstrap -n platform --ignore-not-found
-	$(MAKE) platform-bootstrap
-
-# ── Langfuse credentials ───────────────────────────────────────────────────────
-# SOPS-decrypts secrets/langfuse.enc.yaml → langfuse-credentials Secret in
-# observability ns. Used by OTel collector (otlphttp/langfuse exporter) and by
-# Grafana (Infinity datasource Basic auth env-var substitution). Re-run after
-# rotating Langfuse keys or recreating the cluster.
-
-langfuse-secret: ## Materialize langfuse-credentials Secret from SOPS-encrypted source
-	@[ -f $(SECRETS_DIR)/langfuse.enc.yaml ] || (echo "ERROR: $(SECRETS_DIR)/langfuse.enc.yaml not found" && exit 1)
-	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
-		|| (echo "ERROR: SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
-	@TMPF=$$(mktemp); trap "rm -f $$TMPF" EXIT; \
-	 sops --decrypt $(SECRETS_DIR)/langfuse.enc.yaml > $$TMPF; \
-	 PUB=$$(grep '^LANGFUSE_PUBLIC_KEY:' $$TMPF | awk '{print $$2}'); \
-	 SEC=$$(grep '^LANGFUSE_SECRET_KEY:' $$TMPF | awk '{print $$2}'); \
-	 HOST=$$(grep '^LANGFUSE_HOST:' $$TMPF | awk '{print $$2}'); \
-	 OTLP="$$HOST/api/public/otel"; \
-	 BASIC=$$(printf "%s:%s" "$$PUB" "$$SEC" | base64 | tr -d '\n'); \
-	 kubectl create secret generic langfuse-credentials -n observability \
-		--from-literal=LANGFUSE_PUBLIC_KEY="$$PUB" \
-		--from-literal=LANGFUSE_SECRET_KEY="$$SEC" \
-		--from-literal=LANGFUSE_HOST="$$HOST" \
-		--from-literal=LANGFUSE_OTLP_ENDPOINT="$$OTLP" \
-		--from-literal=LANGFUSE_BASIC_AUTH="$$BASIC" \
-		--dry-run=client -o yaml | kubectl apply -f -; \
-	 kubectl annotate secret langfuse-credentials -n observability \
-		reflector.v1.k8s.emberstack.com/reflection-allowed="true" \
-		reflector.v1.k8s.emberstack.com/reflection-auto-enabled="true" \
-		reflector.v1.k8s.emberstack.com/reflection-auto-namespaces="whisperops-system" \
-		--overwrite
-	@echo "  ✓ langfuse-credentials Secret applied in observability namespace (Reflector annotations set for whisperops-system)"
-
 # ── External access ────────────────────────────────────────────────────────────
 # Used during the regular bring-up (Stage 7 in docs/OPERATIONS.md) immediately
 # after `make tf-apply` to pin the new VM IP into platform Ingress hosts.
@@ -714,16 +648,6 @@ upload-datasets: ## Upload all CSVs from datasets/ to the shared GCS datasets bu
 	gcloud storage rsync --checksums-only $(DATASETS_DIR)/ gs://$$BUCKET/ \
 		--exclude=".*DS_Store.*" \
 		&& echo "✓ Datasets synced to gs://$$BUCKET"
-
-# ── Secrets ────────────────────────────────────────────────────────────────────
-
-decrypt-secrets: ## Decrypt all secrets/*.enc.yaml → secrets/*.dec.yaml (gitignored)
-	@[ -n "$$SOPS_AGE_KEY_FILE" ] && [ -r "$$SOPS_AGE_KEY_FILE" ] \
-		|| (echo "ERROR: SOPS_AGE_KEY_FILE unset or unreadable; export SOPS_AGE_KEY_FILE=$$PWD/age.key" && exit 1)
-	@for f in $(SECRETS_DIR)/*.enc.yaml; do \
-		out=$${f/.enc./.dec.}; \
-		sops --decrypt "$$f" > "$$out" && echo "✓ Decrypted: $$out"; \
-	done
 
 # ── Lint ───────────────────────────────────────────────────────────────────────
 
