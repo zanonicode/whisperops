@@ -31,3 +31,8 @@ export const tokensCachedInputTotal = meter.createCounter('whisperops_tokens_cac
   description: 'Total cached input tokens reported by kagent usage metadata',
   unit: '{token}',
 });
+
+export const streamRetriesTotal = meter.createCounter('chat_frontend_stream_retries_total', {
+  description: 'Transparent one-shot retries triggered by retryable stream errors (e.g. stream closed without terminal signal). Each increment corresponds to one user turn whose first attempt failed and was silently re-sent.',
+  unit: '{retry}',
+});

@@ -44,7 +44,7 @@ kk 'sudo kubectl annotate namespace agent-{name} whisperops.io/budget-usd="10.00
 **Step 2: Scale deployments back up:**
 
 ```bash
-kk 'sudo kubectl scale deploy planner analyst writer sandbox chat-frontend \
+kk 'sudo kubectl scale deploy planner worker sandbox chat-frontend \
   -n agent-{name} --replicas=1'
 ```
 
@@ -52,7 +52,7 @@ kk 'sudo kubectl scale deploy planner analyst writer sandbox chat-frontend \
 
 ```bash
 kk 'sudo kubectl get pods -n agent-{name}'
-# All 5 deployments (planner, analyst, writer, sandbox, chat-frontend) should show Running
+# All 4 deployments (planner, worker, sandbox, chat-frontend) should show Running
 ```
 
 **Step 4: Verify budget-controller no longer fires the kill-switch:**

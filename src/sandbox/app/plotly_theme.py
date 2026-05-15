@@ -3,7 +3,7 @@
 Registers `whisperops_vercel` as a named Plotly template. Intended to be
 applied via ``pio.templates.default = 'plotly_dark+whisperops_vercel'``
 inside the sandbox execution prelude, so every figure produced by the
-analyst inherits the template without any per-figure configuration.
+worker inherits the template without any per-figure configuration.
 
 Color palette:
   - Background: transparent (chat UI dark surface shows through)

@@ -39,9 +39,9 @@ describe('StreamFSM', () => {
     const emit = vi.fn();
     const fsm = new StreamFSM(emit);
     fsm.onStatusUpdate(
-      makeStatus({ metadata: { kagent_author: 'analyst' } })
+      makeStatus({ metadata: { kagent_author: 'worker' } })
     );
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'author', author: 'analyst' }));
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: 'author', author: 'worker' }));
   });
 
   it('emits terminal on final status-update', () => {

@@ -135,8 +135,8 @@ make destroy SKIP_CROSSPLANE=1 FORCE=1 PROJECT_ID=<project-id>
    - `budget_usd` — numeric, e.g. `5.00`.
 5. Submit. Backstage opens a PR in the in-cluster Gitea repo `whisperops/agent-{name}`.
 6. ArgoCD detects the new path within ~30 s and syncs from `manifests/` subfolder.
-7. Sync wave order: Namespace → `agent-prompts` ConfigMap (wave 0) → kagent ModelConfig (wave 1) → Agent CRs planner/analyst/writer + Kyverno Policy (wave 2) → Sandbox + chat-frontend.
-8. Once ArgoCD reports the new Application `Synced/Healthy` (≤ 90 s), browse to `https://agent-{name}.${VM_IP}.sslip.io:8443/`. Ask a question. Expect **at least 3 agent pods** (`planner`, `analyst`, `writer`) in the namespace — each Agent CR gets its own Deployment in kagent v0.9.x.
+7. Sync wave order: Namespace → `agent-prompts` ConfigMap (wave 0) → kagent ModelConfig (wave 1) → Agent CRs planner/worker + Kyverno Policy (wave 2) → Sandbox + chat-frontend.
+8. Once ArgoCD reports the new Application `Synced/Healthy` (≤ 90 s), browse to `https://agent-{name}.${VM_IP}.sslip.io:8443/`. Ask a question. Expect **2 agent pods** (`planner`, `worker`) in the namespace — each Agent CR gets its own Deployment in kagent v0.9.x.
 
 Note that `base_domain` and `project_id` are NOT user-visible form inputs — `_vm-bootstrap` sed-bakes the live VM IP and project ID into the template before pushing it to Gitea.
 
@@ -149,10 +149,10 @@ kk 'sudo kubectl get applications -n argocd'
 # A specific app
 kk "sudo kubectl describe application agent-{name} -n argocd"
 
-# Per-agent Crossplane + kagent resources (expect 3 Agent CRs + 1 ModelConfig)
+# Per-agent Crossplane + kagent resources (expect 2 Agent CRs + 1 ModelConfig)
 kk "sudo kubectl get bucket,serviceaccount.cloudplatform.gcp.upbound.io,serviceaccountkey,projectiammember,modelconfig.kagent.dev,agent.kagent.dev -n agent-{name}"
 
-# Per-agent pods — expect ≥ 3 (planner, analyst, writer each have own Deployment)
+# Per-agent pods — expect 2 (planner, worker each have own Deployment)
 kk "sudo kubectl get pods -n agent-{name} -l whisperops/component=agent"
 
 # kagent controller tail
@@ -164,7 +164,7 @@ kk "sudo kubectl get pods,svc,ingress -n agent-{name}"
 
 ### Rotating an agent system prompt
 
-The `agent-prompts` ConfigMap in each `agent-{name}` namespace holds `planner.md`, `analyst.md`, and `writer.md` keys. The controller polls for changes (eventual-consistency, lag up to ~2 min) and rolls the affected Deployment automatically. If you need immediate effect:
+The `agent-prompts` ConfigMap in each `agent-{name}` namespace holds `planner.md` and `worker.md` keys. The controller polls for changes (eventual-consistency, lag up to ~2 min) and rolls the affected Deployment automatically. If you need immediate effect:
 
 ```bash
 # Edit a prompt in-place (e.g. planner.md)
@@ -261,7 +261,7 @@ kk 'sudo kubectl exec -n observability deploy/lgtm-distributed-mimir-nginx -- \
 kk 'sudo kubectl logs -n whisperops-system deploy/budget-controller --tail=50'
 
 # Manually un-scale an agent after budget top-up
-kk 'sudo kubectl scale deploy planner analyst writer sandbox chat-frontend -n agent-{name} --replicas=1'
+kk 'sudo kubectl scale deploy planner worker sandbox chat-frontend -n agent-{name} --replicas=1'
 ```
 
 See `docs/runbooks/budget-kill-switch.md` for the full procedure.
@@ -306,10 +306,10 @@ In Grafana, **Explore → Tempo**. Each end-to-end query produces a span hierarc
 
 ```
 trace
-├── planner (Gemini 2.5 Flash via Vertex AI)
-│   ├── analyst (A2A call → traces_spanmetrics_latency)
-│   │   └── sandbox.mcp.execute_python  ← subprocess timings, code length
-│   └── writer (A2A call)
+├── planner (Gemini 2.5 Pro via Vertex AI)
+│   └── worker (A2A call → traces_spanmetrics_latency)
+│       └── sandbox.mcp.execute_python  ← subprocess timings, code length
+│           (×1-3 if worker's stderr-retry loop fires)
 ```
 
 Filter by agent: `{ resource.agent_name = "housing-demo" }`. Filter errors: `{ resource.agent_name = "housing-demo" && status = error }`.

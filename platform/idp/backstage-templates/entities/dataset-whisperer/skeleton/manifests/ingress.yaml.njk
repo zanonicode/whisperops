@@ -7,10 +7,11 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
     cert-manager.io/cluster-issuer: letsencrypt-prod
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    # Chart-generation queries can take 60-180s (LLM planner + LLM analyst +
-    # matplotlib render + LLM writer). 300s was the prior default and caused
-    # 504s on a successful end-to-end smoke. Bumped to 600s. Also disable
-    # response buffering so SSE streams to the browser without batching.
+    # Chart-generation queries can take 60-180s (LLM planner + LLM worker
+    # with execute_python + Plotly render + retry-on-stderr loop). 300s was
+    # the prior default and caused 504s on a successful end-to-end smoke.
+    # Bumped to 600s. Also disable response buffering so SSE streams to the
+    # browser without batching.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"

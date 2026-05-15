@@ -13,14 +13,9 @@ describe('StatusPill', () => {
     expect(await screen.findByText('Planner thinking…')).toBeInTheDocument();
   });
 
-  it('renders the analyst label for analyst author', async () => {
-    render(<StatusPill author="analyst" visible={true} />);
-    expect(await screen.findByText('Analyst computing…')).toBeInTheDocument();
-  });
-
-  it('renders the writer label for writer author', async () => {
-    render(<StatusPill author="writer" visible={true} />);
-    expect(await screen.findByText('Writer drafting…')).toBeInTheDocument();
+  it('renders the worker label for worker author', async () => {
+    render(<StatusPill author="worker" visible={true} />);
+    expect(await screen.findByText('Worker analysing…')).toBeInTheDocument();
   });
 
   it('renders Processing… for unknown author', async () => {

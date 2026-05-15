@@ -153,10 +153,115 @@
       ]
     },
     {
+      "id": 9,
+      "title": "Sandbox executions / turn",
+      "description": "Worker's stderr-retry loop fires up to 3× per turn. Healthy ratio is ~1.0–1.3. Sustained >2.0 → prompt regression or worker mis-coding patterns the dataset.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1.5 },
+              { "color": "red", "value": 2.0 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sandbox_executions_per_turn:ratio{agent_name=\"$agent\"}",
+          "legendFormat": "ratio"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Sandbox p95 duration",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 45 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sandbox_duration_bucket{namespace=\"$agent\"}[5m])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Sandbox OOMs (per hour)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(sandbox_oom_total{namespace=\"$agent\"}[5m])) * 3600",
+          "legendFormat": "OOM/h"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Sandbox timeouts (per hour)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "mimir" },
+          "expr": "sum(rate(sandbox_timeouts_total{namespace=\"$agent\"}[5m])) * 3600",
+          "legendFormat": "timeout/h"
+        }
+      ]
+    },
+    {
       "id": 7,
       "title": "Pod logs (this agent namespace, last 1h)",
       "type": "logs",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
@@ -175,7 +280,7 @@
       "id": 8,
       "title": "Trace search (this agent)",
       "type": "traces",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 22 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 26 },
       "datasource": { "type": "tempo", "uid": "tempo" },
       "targets": [
         {

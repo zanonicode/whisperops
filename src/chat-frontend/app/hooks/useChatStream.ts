@@ -214,6 +214,13 @@ export function useChatStream(): UseChatStreamReturn {
                   } else if (eventType === 'error') {
                     if (!isRetry && isRetryableError(evt.message)) {
                       retryableErrorSeen = true;
+                      // Fire-and-forget beacon to the server-side OTel Counter.
+                      // keepalive lets the request survive unload; .catch absorbs
+                      // network errors so the retry path itself never crashes.
+                      fetch('/api/metrics/stream-retry', {
+                        method: 'POST',
+                        keepalive: true,
+                      }).catch(() => {});
                       // Don't write the error into the message — caller will retry.
                       // Reset partial buffers so the retry starts clean.
                       stopFlush();

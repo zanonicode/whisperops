@@ -1,9 +1,0 @@
-namespace: whisperops-system
-
-prompts:
-  planner:
-    overrideFile: ""
-  analyst:
-    overrideFile: ""
-  writer:
-    overrideFile: ""

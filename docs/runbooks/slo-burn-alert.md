@@ -66,7 +66,7 @@ Grafana → Explore → Tempo.
 { resource.agent_name = "housing-demo" && duration > 30s }
 ```
 
-Click a trace → expand the span hierarchy → identify the failing component (planner, analyst, writer, sandbox).
+Click a trace → expand the span hierarchy → identify the failing component (planner, worker, sandbox).
 
 ### Step 5 — Follow trace→logs
 

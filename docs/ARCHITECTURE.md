@@ -39,8 +39,8 @@ GCP PROJECT (Terraform-managed)
         Langfuse (self-hosted v1.5.29 + Cloud SQL Auth Proxy sidecar)
       Per-Agent Layer (Backstage → Gitea → ArgoCD)
         namespace: agent-{name}
-          agent-prompts ConfigMap (planner.md / analyst.md / writer.md)
-          Planner / Analyst / Writer (kagent Agent CRs v1alpha2 Declarative,
+          agent-prompts ConfigMap (planner.md / worker.md)
+          Planner / Worker (kagent Agent CRs v1alpha2 Declarative,
             each its own Deployment; A2A routing via controller :8083)
           Sandbox MCP (FastAPI + FastMCP)  Chat Frontend (Next.js)
           Crossplane: Bucket + ServiceAccount + ServiceAccountKey + IAM bindings
@@ -58,7 +58,7 @@ The `root-app` Application is applied at the end of `_vm-bootstrap`. It watches 
 ### kagent
 Kubernetes-native LLM agent runtime. Manages `Agent`, `ModelConfig`, and `ToolServer` CRDs at `kagent.dev/v1alpha2` (stored version; v1alpha1 still served via conversion webhook). The CRDs ship as a separate Helm chart (`kagent-crds`) installed first via helmfile `needs:` ordering so the main `kagent` chart can register CRs without a CRD-establish race.
 
-In v0.9.x, each Agent CR scaffolds its own Kubernetes Deployment + Service. The three agent roles (planner/analyst/writer) run as separate pods communicating over native A2A HTTP through the kagent-controller at port 8083. System prompts are stored in a per-agent-namespace `agent-prompts` ConfigMap (keys: `planner.md`, `analyst.md`, `writer.md`) referenced by `spec.declarative.systemMessageFrom`.
+In v0.9.x, each Agent CR scaffolds its own Kubernetes Deployment + Service. The two agent roles (planner/worker) run as separate pods communicating over native A2A HTTP through the kagent-controller at port 8083 — a single delegation hop, not the prior three. System prompts are stored in a per-agent-namespace `agent-prompts` ConfigMap (keys: `planner.md`, `worker.md`) referenced by `spec.declarative.systemMessageFrom`. The worker now both computes (via `execute_python` against the sandbox) and composes the user-facing response in one pass, with an internal up-to-3-attempt stderr-recovery loop replacing the old analyst→writer A2A hop.
 
 ### Sandbox MCP (per agent)
 One FastAPI Deployment per `agent-{name}` namespace running an MCP server over streamable-HTTP. Exposes a single tool (`execute_python_<agent>` — namespaced per-agent because kagent's tool registry has a global UNIQUE constraint on `tool.name`). Enforces: 60s subprocess timeout, 4 Gi memory limit (`setrlimit RLIMIT_AS`), read-only root filesystem, NetworkPolicy egress restricted to GCS + DNS + the in-cluster OTel collector. Mounts the agent's GCP SA key from the namespace's `gcp-sa-key` Secret — no per-call credential passing.
@@ -114,7 +114,7 @@ Per-agent detail dashboards are provisioned automatically at scaffold time via t
 1. Operator submits the Backstage form (4 visible fields) → scaffolder task created.
 2. Nunjucks skeleton files rendered with sed-baked `base_domain` + `project_id` → committed to Gitea repo `whisperops/agent-{name}/`.
 3. The repo's ArgoCD Application detects the new path → syncs from `manifests/` subfolder.
-4. Sync wave order: Namespace → `agent-prompts` ConfigMap (wave 0) → Crossplane resources (Bucket + SA + Key + IAMMember) → kagent ModelConfig (wave 1) + Agent CRs (planner/analyst/writer v1alpha2 Declarative, wave 2) + Kyverno Policy (wave 2, generates `allow-a2a` NetworkPolicy for :8083) → Sandbox + Chat Frontend Deployments + Service + Ingress.
+4. Sync wave order: Namespace → `agent-prompts` ConfigMap (wave 0) → Crossplane resources (Bucket + SA + Key + IAMMember) → kagent ModelConfig (wave 1) + Agent CRs (planner/worker v1alpha2 Declarative, wave 2) + Kyverno Policy (wave 2, generates `allow-a2a` NetworkPolicy for :8083) → Sandbox + Chat Frontend Deployments + Service + Ingress.
 5. Reflector replicates `ar-pull-secret`, `langfuse-credentials`, and `kagent-vertex-credentials` into the new namespace within seconds.
 6. cert-manager issues TLS for `agent-{name}.{vm-ip}.sslip.io` → chat UI is live.
 
@@ -126,7 +126,7 @@ Per-agent detail dashboards are provisioned automatically at scaffold time via t
 4. Analyst calls the Sandbox MCP `execute_python_<agent>` tool. Sandbox subprocess loads the dataset CSV from `gs://whisperops-datasets/`, runs the user code with `pd`/`np`/`plt`/`df` pre-loaded, uploads any chart PNGs to `gs://agent-{name}/charts/`, returns `{stdout, signed_chart_url, error?}`.
 5. Writer composes markdown prose with chart embeds and code blocks, streams tokens back via SSE.
 6. Browser renders tokens incrementally; charts render inline.
-7. The OTel Collector dual-exports the trace to both Tempo (queryable via Grafana TraceQL) and Langfuse Cloud (cost rollup view). The trace hierarchy includes `a2a.request` spans propagated via W3C `traceparent` across pod boundaries: `planner.invoke → a2a.request → analyst.handle → analyst.llm.call → a2a.request → writer.handle → writer.llm.call`.
+7. The OTel Collector exports the trace to Tempo (queryable via Grafana TraceQL); self-hosted Langfuse receives a parallel feed for prompt/response inspection. The trace hierarchy includes `a2a.request` spans propagated via W3C `traceparent` across pod boundaries: `planner.invoke → a2a.request → worker.handle → worker.llm.call → execute_python (×1-3 if stderr-retry loop fires)`.
 
 ## Security Controls
 

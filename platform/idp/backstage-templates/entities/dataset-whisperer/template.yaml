@@ -27,7 +27,7 @@ spec:
           title: Agent Name
           type: string
           description: >
-            Short slug identifier for this agent (e.g., "housing-analyst").
+            Short slug identifier for this agent (e.g., "housing-bot").
             Used in namespace, bucket, and ingress hostname.
           pattern: '^[a-z][a-z0-9-]{2,28}[a-z0-9]$'
           ui:autofocus: true

@@ -23,14 +23,14 @@ def make_fake_agent(agent_name: str, namespace: str, budget_usd: str | None = "1
 def test_get_budget_usd_parses_correctly():
     from main import get_budget_usd
 
-    agent = make_fake_agent("analyst", "agent-test-abc1", "5.00")
+    agent = make_fake_agent("worker", "agent-test-abc1", "5.00")
     assert get_budget_usd(agent) == pytest.approx(5.0)
 
 
 def test_get_budget_usd_returns_none_when_missing():
     from main import get_budget_usd
 
-    agent = make_fake_agent("analyst", "agent-test-abc1", None)
+    agent = make_fake_agent("worker", "agent-test-abc1", None)
     assert get_budget_usd(agent) is None
 
 
@@ -39,7 +39,7 @@ def test_get_budget_usd_returns_none_on_invalid():
 
     agent = {
         "metadata": {
-            "name": "analyst",
+            "name": "worker",
             "namespace": "agent-test",
             "annotations": {"whisperops.io/budget-usd": "not-a-number"},
         }
@@ -52,7 +52,7 @@ def test_get_budget_usd_returns_none_on_invalid():
 def test_run_once_emits_80_percent_event(mock_emit, mock_spend):
     from main import run_once
 
-    fake_agent = make_fake_agent("analyst", "agent-test-x1z", "5.00")
+    fake_agent = make_fake_agent("worker", "agent-test-x1z", "5.00")
 
     custom_api = MagicMock()
     custom_api.list_cluster_custom_object.return_value = {"items": [fake_agent]}
@@ -73,7 +73,7 @@ def test_run_once_emits_80_percent_event(mock_emit, mock_spend):
 def test_run_once_scales_to_zero_at_100_percent(mock_emit, mock_scale, mock_spend):
     from main import run_once
 
-    fake_agent = make_fake_agent("analyst", "agent-test-y2w", "5.00")
+    fake_agent = make_fake_agent("worker", "agent-test-y2w", "5.00")
 
     custom_api = MagicMock()
     custom_api.list_cluster_custom_object.return_value = {"items": [fake_agent]}
@@ -93,7 +93,7 @@ def test_run_once_scales_to_zero_at_100_percent(mock_emit, mock_scale, mock_spen
 def test_run_once_no_action_below_80_percent(mock_scale, mock_emit, mock_spend):
     from main import run_once
 
-    fake_agent = make_fake_agent("analyst", "agent-test-z3k", "5.00")
+    fake_agent = make_fake_agent("worker", "agent-test-z3k", "5.00")
 
     custom_api = MagicMock()
     custom_api.list_cluster_custom_object.return_value = {"items": [fake_agent]}
@@ -111,7 +111,7 @@ def test_run_once_no_action_below_80_percent(mock_scale, mock_emit, mock_spend):
 def test_run_once_handles_langfuse_error_gracefully(mock_spend):
     from main import run_once
 
-    fake_agent = make_fake_agent("analyst", "agent-test-q9p", "5.00")
+    fake_agent = make_fake_agent("worker", "agent-test-q9p", "5.00")
 
     custom_api = MagicMock()
     custom_api.list_cluster_custom_object.return_value = {"items": [fake_agent]}

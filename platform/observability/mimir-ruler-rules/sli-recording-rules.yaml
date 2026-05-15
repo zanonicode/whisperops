@@ -11,7 +11,7 @@ metadata:
 data:
   sli-recording-rules.yaml: |
     groups:
-      # ─── A.1 — kagent A2A planner→analyst latency ──────────────────────────
+      # ─── A.1 — kagent A2A planner→worker latency ───────────────────────────
       - name: kagent_a2a_latency
         interval: 30s
         rules:
@@ -97,6 +97,31 @@ data:
                 sum by (agent_name) (rate(whisperops_tokens_input_total[5m]))
                 + sum by (agent_name) (rate(whisperops_tokens_cached_input_total[5m]))
               )
+
+      # ─── A.5 — Sandbox executions per user turn ─────────────────────────────
+      # Worker has an internal stderr-retry loop (up to 3 attempts per turn),
+      # so this ratio measures how many python executions the worker fires per
+      # http request. A healthy ratio is ~1.0–1.3 (most turns succeed on first
+      # try; some need a single retry). Sustained > 2.0 signals a prompt
+      # regression or a dataset shape the worker is consistently mis-coding.
+      - name: sandbox_executions_per_turn
+        interval: 60s
+        rules:
+          - record: sandbox_executions_per_turn:ratio
+            expr: |
+              sum by (agent_name) (rate(sandbox_executions[5m]))
+              /
+              sum by (agent_name) (rate(http_requests_total{service="chat-frontend"}[5m]))
+
+          - alert: SandboxExcessiveRetries
+            expr: sandbox_executions_per_turn:ratio > 2.0
+            for: 15m
+            labels:
+              severity: warn
+              slo: sandbox_health
+            annotations:
+              summary: "Agent {{ $labels.agent_name }} averaging >2 sandbox executions per turn (worker retry loop firing often)"
+              runbook: "docs/runbooks/slo-burn-alert.md"
 
       # ─── C.1 — ArgoCD sync health ───────────────────────────────────────────
       - name: argocd_sync_health
