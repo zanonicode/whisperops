@@ -611,6 +611,28 @@ destroy-agent: ## Tear down ONE scaffolded agent (cluster + GCS bucket + SA + IA
 			echo "  ✓ Cluster-side cleanup complete for $$NS" \
 		'; \
 	fi
+	@# Delete the per-agent Gitea repo. Backstage scaffolds each agent into a
+	@# fresh repo (giteaAdmin/agent-<name>); leaving it behind blocks
+	@# re-scaffolding with the same agent name (Backstage's create step
+	@# fails with "repository already exists"). Done AFTER the ArgoCD app
+	@# delete above so no reconciler is left watching a deleted repo.
+	@# Gitea API: DELETE /api/v1/repos/{owner}/{repo} → 204 on success, 404
+	@# if already gone — both treated as success. Idempotent.
+	@echo "→ Deleting Gitea repo giteaAdmin/agent-$(AGENT)"
+	@if VM_IP=$$(gcloud compute instances describe whisperops-vm --zone=$(ZONE) --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null) && [ -n "$$VM_IP" ]; then \
+		gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) --command="\
+			GITEA_PASS=\$$(sudo kubectl get secret -n gitea gitea-credential -o jsonpath='{.data.password}' | base64 -d 2>/dev/null); \
+			if [ -z \"\$$GITEA_PASS\" ]; then echo '  ↳ Gitea credential secret missing — skipping'; exit 0; fi; \
+			CODE=\$$(curl -sk -X DELETE -o /dev/null -w '%{http_code}' -u \"giteaAdmin:\$$GITEA_PASS\" \"https://gitea.$$VM_IP.sslip.io:8443/api/v1/repos/giteaAdmin/agent-$(AGENT)\"); \
+			case \"\$$CODE\" in \
+				204) echo '  ✓ Gitea repo giteaAdmin/agent-$(AGENT) deleted (HTTP 204)' ;; \
+				404) echo '  ↳ Gitea repo giteaAdmin/agent-$(AGENT) already gone (HTTP 404)' ;; \
+				*)   echo \"  ✗ Gitea DELETE returned HTTP \$$CODE — manual cleanup may be needed via Gitea UI\" ;; \
+			esac \
+		" || echo "  ↳ SSH to VM failed — skipping Gitea cleanup"; \
+	else \
+		echo "  ↳ VM not reachable — skipping Gitea cleanup (repo may persist; delete manually before re-scaffolding same name)"; \
+	fi
 	@# Fallback GCP-side cleanup — no-ops if Crossplane already handled them.
 	@# Matches the _clean-orphan-buckets / _clean-orphan-sas pattern but scoped to ONE agent.
 	@echo "→ GCP-side fallback cleanup for agent '$(AGENT)'"
