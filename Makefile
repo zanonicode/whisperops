@@ -108,6 +108,10 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, node_modules, m
 	done
 	@# COPYFILE_DISABLE=1: macOS bsdtar otherwise injects xattr-derived `._*`
 	@# entries into the archive stream that `--exclude='._*'` cannot filter.
+	@# rm -rf /tmp/whisperops before extract: tar is additive and won't remove
+	@# files that were deleted locally; wiping first gives rsync-with-delete
+	@# semantics so file deletions in the operator's repo propagate to Gitea +
+	@# ArgoCD on the next sync, not just modifications + additions.
 	@COPYFILE_DISABLE=1 tar \
 		--exclude='.terraform' \
 		--exclude='.git' \
@@ -118,7 +122,7 @@ copy-repo: ## Rsync local repo to VM (excludes .terraform, .git, node_modules, m
 		--exclude='.DS_Store' \
 		-czf - . | \
 	gcloud compute ssh whisperops-vm --zone=$(ZONE) $(SSH_FLAGS) \
-		--command='mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
+		--command='sudo rm -rf /tmp/whisperops && mkdir -p /tmp/whisperops && tar -xzf - -C /tmp/whisperops'
 	@echo "  ✓ Repo copied to /tmp/whisperops on whisperops-vm"
 
 gcp-bootstrap-key: ## Generate fresh whisperops-bootstrap SA key + apply as Secret in crossplane-system
